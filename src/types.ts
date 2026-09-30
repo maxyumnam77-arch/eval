@@ -20,6 +20,7 @@ export interface DescriptiveQuestion {
   referenceAnswer: string;
   criteria: RubricCriterion[];
   rubricApproved: boolean;
+  rubricVersion?: number;
   approvedBy?: string;
   approvedAt?: string;
 }
@@ -28,12 +29,22 @@ export interface StudentSubmission {
   id: string;
   studentName: string;
   studentId: string;
-  avatarSeed: string;
+  avatarSeed?: string;
   fileName: string;
   submittedAt: string;
   questionId: string;
-  handwrittenAnswerLines: string[];
+  handwrittenAnswerLines?: string[];
   ocrTranscript: string;
+  ocrOriginal?: string;
+  ocrEngine?: string;
+  ocrError?: string;
+  pages?: { position: number; fileName: string; url: string }[];
+  modelName?: string;
+  modelTotal?: number;
+  rubricSnapshot?: DescriptiveQuestion;
+  questionVersion?: number;
+  reviewFlags?: string[];
+  teacherOverrides?: Record<string, { mark: number; note: string; at: string }>;
   demoNote?: string;
   status: 'pending' | 'graded';
   evaluatedTotalScore?: number;
@@ -70,6 +81,9 @@ export interface MCQStudentAttempt {
   studentId: string;
   answers: Record<string, 'A' | 'B' | 'C' | 'D' | ''>;
   submittedAt: string;
+  score?: number;
+  maxMarks?: number;
+  results?: { questionId: string; studentAnswer: string; correctKey: string; awarded: number }[];
 }
 
 export type ActiveNavTab = 'grade' | 'bank' | 'mcq' | 'results' | 'model';

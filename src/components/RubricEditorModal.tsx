@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DescriptiveQuestion, RubricCriterion } from '../types';
 import {
   X,
@@ -26,14 +26,19 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
   onClose,
   onSaveQuestion,
 }) => {
-  if (!isOpen) return null;
-
   const isDark = theme === 'dark';
   const [maxMarks, setMaxMarks] = useState<number>(question.maxMarks);
   const [criteria, setCriteria] = useState<RubricCriterion[]>(
     question.criteria.map((c) => ({ ...c }))
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (isOpen) {
+      setMaxMarks(question.maxMarks);
+      setCriteria(question.criteria.map(c => ({ ...c })));
+      setErrorMessage(null);
+    }
+  }, [isOpen, question.id, question.rubricVersion]);
 
   // All whole marks from 1 through 10 as explicitly requested
   const wholeMarkButtons = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -123,6 +128,10 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
       );
       return;
     }
+    if (criteria.some(c => !c.title.trim() || !c.description.trim() || c.description.includes('Edit this draft'))) {
+      setErrorMessage('Replace the draft with specific, assessable expectations before approving.');
+      return;
+    }
 
     const updated: DescriptiveQuestion = {
       ...question,
@@ -136,6 +145,8 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
     onSaveQuestion(updated);
     onClose();
   };
+
+  if (!isOpen) return null;
 
   return (
     <div

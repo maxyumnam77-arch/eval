@@ -3,6 +3,8 @@ import { ActiveNavTab } from '../types';
 import { Sun, Moon } from 'lucide-react';
 
 interface NavbarProps {
+  workspace: 'grading' | 'admin';
+  onWorkspaceChange: (workspace: 'grading' | 'admin') => void;
   activeTab: ActiveNavTab;
   onTabChange: (tab: ActiveNavTab) => void;
   gradedCount: number;
@@ -12,6 +14,8 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
+  workspace,
+  onWorkspaceChange,
   activeTab,
   onTabChange,
   gradedCount,
@@ -21,13 +25,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const isDark = theme === 'dark';
 
-  const tabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
+  const gradingTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
     { id: 'grade', label: 'Grade Answer' },
-    { id: 'bank', label: 'Question Bank' },
-    { id: 'mcq', label: 'MCQs (1M / 0M)' },
+    { id: 'mcq', label: 'Grade MCQs' },
     { id: 'results', label: 'Results & Review', badge: `${gradedCount}/${totalSubmissions}` },
+  ];
+  const adminTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
+    { id: 'bank', label: 'Question Bank' },
+    { id: 'mcq', label: 'MCQ Answer Keys' },
     { id: 'model', label: 'Model & Evaluation' },
   ];
+  const tabs = workspace === 'grading' ? gradingTabs : adminTabs;
 
   return (
     <header
@@ -78,7 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 isDark ? 'text-slate-400' : 'text-slate-500'
               }`}
             >
-              Teacher Evaluation Portal · Demo
+              Evaluation Portal
             </span>
           </div>
         </div>
@@ -99,7 +107,11 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </div>
 
-      {/* Navigation Links - Sleek Frosted Pill Bar */}
+      <div className="flex gap-1 text-xs font-bold rounded-xl border border-slate-400/30 p-1">
+        <button onClick={() => onWorkspaceChange('grading')} className={`px-3 py-1.5 rounded-lg ${workspace === 'grading' ? 'bg-blue-600 text-white' : ''}`}>Grading</button>
+        <button onClick={() => onWorkspaceChange('admin')} className={`px-3 py-1.5 rounded-lg ${workspace === 'admin' ? 'bg-blue-600 text-white' : ''}`}>Admin</button>
+      </div>
+      {/* Navigation Links */}
       <nav
         className={`flex items-center gap-1 p-1 rounded-full border overflow-x-auto max-w-full backdrop-blur-md transition-colors ${
           isDark
@@ -146,17 +158,6 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Right Controls - Theme Toggle (Sun in Dark Mode, Moon in Light Mode) */}
       <div className="hidden lg:flex items-center gap-3">
-        <div
-          className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs transition-colors ${
-            isDark
-              ? 'bg-white/[0.06] border-white/15 text-slate-300'
-              : 'bg-slate-100 border-slate-200 text-slate-600 shadow-xs'
-          }`}
-        >
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="text-[11px] font-medium">Rubric Guard Active</span>
-        </div>
-
         <button
           onClick={onToggleTheme}
           title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}

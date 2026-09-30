@@ -1,0 +1,77 @@
+# Smart Exam Evaluation
+
+Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. The React UI has **Grading** and **Admin** workspaces. FastAPI saves questions, approved rubric versions, answer images, corrected OCR text, marks, evidence, teacher corrections, and MCQ attempts in SQLite.
+
+## Run on the Mac
+
+Python 3.11+ and Node 20+ are needed. Start the local model you already have:
+
+- **Ollama:** run `ollama list`. If `qwen3.5:4b` is present, use it; otherwise `ollama pull qwen3.5:4b`. Ollama must be running locally. This one model accepts text and images.
+- **Existing MLX Qwen3.5-4B:** no second model download is needed. Start its existing OpenAI-compatible local server, then set `EVAL_PROVIDER=mlx`, `EVAL_MODEL` to its served model ID, and `EVAL_MODEL_URL` to its loopback URL/port. The old V3.3.7 server does not have to be copied into this repo.
+
+Terminal 1 (backend):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Terminal 2 (UI):
+
+```bash
+npm install
+npm run dev
+```
+
+Open **http://127.0.0.1:3000**. Check **http://127.0.0.1:8000/api/health** if the model is unavailable. The UI and API listen on the local computer. Vite forwards `/api` to FastAPI.
+
+**OCR:** Accurate uses the configured local Qwen vision model. Fast uses the optional PP-OCR service at `http://127.0.0.1:8001/ocr` (set `PADDLE_OCR_URL` if different). The earlier Paddle service is not included here. If OCR is unavailable, the image is still saved; type and save the transcript manually. Review OCR text before grading. An image folder represents **one student's multi-page answer**; create a separate submission for each student.
+
+## Use the app
+
+1. In **Admin → Question Bank**, add a question, maximum marks (quick buttons 1–10 or a positive custom amount), and a teacher reference answer.
+2. Configure specific rubric criteria and their marks. Their sum must equal the maximum. Approve the rubric before grading.
+3. In **Grading → Grade Answer**, select the question, enter a student name/ID, then type an answer or upload images. Review and save the text. Press **Grade answer**.
+4. In **Admin → MCQ Answer Keys**, create or edit MCQs. In **Grading → Grade MCQs**, enter a student's choices. Exact key match earns 1; wrong or blank earns 0.
+5. In **Results & Review**, inspect each criterion's evidence, save teacher corrections and feedback, and record an independently assigned teacher mark for evaluation.
+
+Data stays in `data/evaluation.sqlite3`; images are in `data/uploads/`. The `data/` directory and local environment files are excluded from Git. Back up that directory if you need to preserve records.
+
+## Architecture and algorithm
+
+| Stage | Implementation |
+| --- | --- |
+| Input | Typed text or multiple uploaded answer images per student/question |
+| OCR | Optional Paddle Fast or local Qwen vision Accurate; teacher corrects the transcript |
+| Descriptive grading | Pretrained local Qwen3.5-4B transformer receives question, teacher reference, approved criteria and maximum marks |
+| Verification | Code checks that each positive criterion has a quote present in the student text, rejects invalid marks, and sums criterion awards within the teacher's maximum |
+| MCQ | Deterministic answer-key comparison, 1 or 0; no ML |
+| Storage | SQLite question/rubric tables, submission pages, versioned grade snapshots, MCQ attempts, teacher labels |
+| Evaluation | Teacher labels versus unadjusted model marks: sample count, MAE, within-one-mark rate, Pearson correlation when defined |
+
+**Five-mark example:** five teacher-approved criteria worth one mark each can earn 5/5 when all five are supported. Five arbitrary bullet points are not automatically worth five marks. Rubric versions and the reviewed answer are copied into each grade so later edits do not rewrite old evidence.
+
+This rebuild performs **inference** using a pretrained model; it does not train or fine-tune Qwen. It is not an unsupervised or reinforcement-learning training experiment. A separate supervised Gradient Boosting comparison script is available below; it is **not** the live descriptive grader.
+
+## Optional supervised comparison
+
+Collect at least 30 independently teacher-marked answers across three or more different questions. Save those marks through Results & Review, preferably before viewing model marks. Then:
+
+```bash
+source .venv/bin/activate
+pip install -r backend/requirements-research.txt
+python -m backend.train_baseline
+```
+
+The script takes teacher labels from the local SQLite database, extracts token overlap, length ratio and TF-IDF cosine features, fits a `GradientBoostingRegressor`, and holds out entire question IDs. The vectorizer fits only on training questions. It saves the trained artifact and measured holdout report under `data/`. If there are too few labels, it stops without inventing a model or accuracy. Teacher labels should come from real marking, not synthetic answers treated as human data.
+
+## Limits and checks
+
+- A model can misunderstand a valid paraphrase or overvalue an irrelevant quote. Exact quote matching confirms text presence, not semantic correctness. Review flagged or disputed grades.
+- OCR can misread handwriting. The teacher must verify the transcript.
+- A 4B model's results require testing against a held-out, teacher-marked set before claiming accuracy. The UI reports no metrics until labels are entered.
+- This is a **local academic tool**, without login/role security. Do not expose the API to the public internet or commit real student records.
+
+Checks: `npm run lint`, `npm run build`, and `.venv/bin/python -m pytest backend/tests -q`.

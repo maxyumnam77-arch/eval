@@ -1,6 +1,6 @@
 {
   "name": "Smart Exam Evaluation",
-  "description": "Teacher-facing exam grading system prototype with rubric-based evaluation, OCR transcripts, question banks, and model comparison insights.",
+  "description": "Local exam grading assistant with teacher-approved rubrics, OCR review, and MCQ scoring.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

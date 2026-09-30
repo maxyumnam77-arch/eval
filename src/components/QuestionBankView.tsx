@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DescriptiveQuestion, RubricCriterion } from '../types';
 import {
   BookOpen,
@@ -33,6 +33,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   );
   const [isRubricModalOpen, setIsRubricModalOpen] = useState(false);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
+  const [editDraft, setEditDraft] = useState<DescriptiveQuestion | null>(null);
 
   // New question form state
   const [newTitle, setNewTitle] = useState('');
@@ -41,28 +42,22 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   const [newPrompt, setNewPrompt] = useState('');
   const [newMaxMarks, setNewMaxMarks] = useState(5.0);
   const [newRefAnswer, setNewRefAnswer] = useState('');
+  useEffect(() => {
+    setSelectedQuestion(current => questions.find(q => q.id === current?.id) || questions[0] || null);
+  }, [questions]);
+  useEffect(() => setEditDraft(null), [selectedQuestion?.id]);
 
   const wholeMarkButtons = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim() || !newPrompt.trim()) return;
+    if (!newTitle.trim() || !newPrompt.trim() || !newRefAnswer.trim() || newMaxMarks <= 0) return;
 
     // Default criteria distributed to match newMaxMarks
-    const defaultCriteria: RubricCriterion[] = [
-      {
-        id: `crit-new-1`,
-        title: 'Core Conceptual Accuracy',
-        description: 'Demonstrates deep scientific understanding of required principles.',
-        maxMark: Number((newMaxMarks / 2).toFixed(1)),
-      },
-      {
-        id: `crit-new-2`,
-        title: 'Biochemical / Technical Precision',
-        description: 'Correctly applies key vocabulary, molecular pathways, and mechanics.',
-        maxMark: Number((newMaxMarks - Number((newMaxMarks / 2).toFixed(1))).toFixed(1)),
-      },
-    ];
+    const defaultCriteria: RubricCriterion[] = [{
+      id: `crit-${Date.now()}`, title: 'Define the expected answer points',
+      description: 'Edit this draft into specific assessable criteria before approval.', maxMark: newMaxMarks,
+    }];
 
     const newQ: DescriptiveQuestion = {
       id: `q-custom-${Date.now()}`,
@@ -72,7 +67,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
       classGrade: 'Grade 11 · Advanced',
       maxMarks: newMaxMarks,
       prompt: newPrompt,
-      referenceAnswer: newRefAnswer || 'Exemplary instructor standard answer.',
+      referenceAnswer: newRefAnswer,
       rubricApproved: false, // New questions require explicit rubric review and approval
       criteria: defaultCriteria,
     };
@@ -257,6 +252,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
             </label>
             <textarea
               rows={3}
+              required
               value={newRefAnswer}
               onChange={(e) => setNewRefAnswer(e.target.value)}
               className={`w-full px-3 py-2 rounded-lg border focus:outline-none focus:border-blue-500 leading-relaxed transition-colors ${
@@ -431,6 +427,10 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
               </div>
 
               <div className="flex items-center gap-2.5">
+                <button type="button" onClick={() => setEditDraft({ ...selectedQuestion })}
+                  className={`px-3 py-2 rounded-xl border text-xs ${isDark ? 'border-white/20' : 'border-slate-300'}`}>
+                  Edit question & answer
+                </button>
                 <button
                   type="button"
                   onClick={() => onSelectForGrading(selectedQuestion)}
@@ -440,8 +440,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                   <span>Select for Grade Answer</span>
                 </button>
 
-                {questions.length > 1 && (
-                  <button
+                <button
                     type="button"
                     onClick={() => {
                       if (confirm(`Delete "${selectedQuestion.title}"?`)) {
@@ -458,9 +457,24 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
-                )}
               </div>
             </div>
+
+            {editDraft && <form onSubmit={e => { e.preventDefault(); onUpdateQuestion({ ...editDraft, rubricApproved: false }); setEditDraft(null); }}
+              className="space-y-2 rounded-xl border border-blue-400/40 p-4 text-xs">
+              <p className="font-bold">Editing the question or reference answer requires rubric approval again.</p>
+              {(['code', 'title', 'subject', 'classGrade'] as const).map(field => <label key={field} className="block">
+                <span className="capitalize">{field}</span>
+                <input required className={`block w-full rounded-lg border p-2 ${isDark ? 'bg-slate-900 border-white/20 text-white' : 'bg-white border-slate-300 text-slate-900'}`}
+                  value={editDraft[field]} onChange={e => setEditDraft({ ...editDraft, [field]: e.target.value })} />
+              </label>)}
+              <label className="block">Question prompt<textarea required rows={3} className={`block w-full rounded-lg border p-2 ${isDark ? 'bg-slate-900 border-white/20 text-white' : 'bg-white border-slate-300 text-slate-900'}`}
+                value={editDraft.prompt} onChange={e => setEditDraft({ ...editDraft, prompt: e.target.value })} /></label>
+              <label className="block">Teacher reference answer<textarea required rows={4} className={`block w-full rounded-lg border p-2 ${isDark ? 'bg-slate-900 border-white/20 text-white' : 'bg-white border-slate-300 text-slate-900'}`}
+                value={editDraft.referenceAnswer} onChange={e => setEditDraft({ ...editDraft, referenceAnswer: e.target.value })} /></label>
+              <div className="flex gap-2"><button className="rounded-lg bg-blue-600 text-white px-3 py-2">Save changes</button>
+                <button type="button" onClick={() => setEditDraft(null)} className="rounded-lg border px-3 py-2">Cancel</button></div>
+            </form>}
 
             {/* Prompt */}
             <div className="space-y-1.5">
@@ -511,7 +525,7 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                       isDark ? 'text-white' : 'text-slate-900'
                     }`}
                   >
-                    <span>Teacher-Approved Rubric Criteria</span>
+                    <span>{selectedQuestion.rubricApproved ? 'Teacher-Approved Rubric Criteria' : 'Draft Rubric Criteria'}</span>
                     <span
                       className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full border ${
                         isDark
@@ -605,7 +619,6 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
           onClose={() => setIsRubricModalOpen(false)}
           onSaveQuestion={(updated) => {
             onUpdateQuestion(updated);
-            setSelectedQuestion(updated);
           }}
         />
       )}

@@ -5,10 +5,12 @@ import { AnswerImage } from './AnswerImage';
 import { StudentQuestion } from '../types';
 import { downloadCsv, printReport } from '../reports';
 import { WorkPhase, WorkProgress } from './WorkProgress';
+import { clearDraft, DraftNotice, DraftScope, emptyDraftNotice, readTextDraft, writeDraft } from '../drafts';
+import { DraftStatus } from './DraftStatus';
 
 type Question = { id: string; code: string; title: string; prompt: string; subject: string; maxMarks: number };
 type Result = {
-  id: string; status: 'graded' | 'pending'; studentName: string; questionTitle: string; submittedAt: string;
+  id: string; questionId: string; examAttemptId?: string | null; status: 'graded' | 'pending'; studentName: string; questionTitle: string; submittedAt: string;
   maxMarks: number; transcript: string; ocrError: string; message?: string;
   score?: number; feedback?: string; reviewFlags?: string[];
   criteria?: { title: string; maxMark: number; mark: number; evidence: string }[];
@@ -34,13 +36,42 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
   const [error, setError] = useState('');
   const [phase, setPhase] = useState<WorkPhase>('idle');
   const [scanned, setScanned] = useState(false);
+  const [answerNotice, setAnswerNotice] = useState<DraftNotice>(emptyDraftNotice);
+  const [reviewNotice, setReviewNotice] = useState<DraftNotice>(emptyDraftNotice);
   const historyPath = `/student/answers${examAttemptId ? `?exam_attempt_id=${examAttemptId}` : ''}`;
+  const selectionScope: DraftScope = { accountId: account.id, kind: 'answer-selection', id: examAttemptId || 'practice' };
+  const pendingScope: DraftScope = { ...selectionScope, kind: 'pending-selection' };
+  const answerScope = (id: string): DraftScope => ({ accountId: account.id, kind: 'answer', id, examAttemptId });
+  const reviewScope = (id: string): DraftScope => ({ accountId: account.id, kind: 'review', id });
+
+  const restoreAnswer = (id: string) => {
+    const saved = readTextDraft(answerScope(id));
+    setAnswer(saved.value || ''); setAnswerNotice(saved.notice);
+  };
+  const openReview = (pending: Result) => {
+    const saved = readTextDraft(reviewScope(pending.id));
+    setDraft(pending); setResult(null); setReviewedText(saved.value ?? pending.transcript);
+    setReviewNotice(saved.notice); setPreviewPage(0); setPhase('review'); setScanned(pending.pages.length > 0);
+    writeDraft(pendingScope, pending.id);
+  };
 
   useEffect(() => {
+    let disposed = false;
     Promise.all([examQuestions ? Promise.resolve(examQuestions) : request<Question[]>('/student/questions'), request<Result[]>(historyPath)])
-      .then(([items, saved]) => { setQuestions(items); setQuestionId(items[0]?.id || ''); setHistory(saved); })
-      .catch(e => { setQuestions([]); setError((e as Error).message); });
-  }, [examAttemptId]);
+      .then(([items, saved]) => {
+        if (disposed) return;
+        setQuestions(items); setHistory(saved);
+        const previous = readTextDraft(selectionScope).value;
+        const id = items.some(q => q.id === previous) ? previous! : items[0]?.id || '';
+        setQuestionId(id); if (id) restoreAnswer(id);
+        const pendingId = readTextDraft(pendingScope).value;
+        const pending = saved.find(s => s.id === pendingId && s.status === 'pending');
+        if (pending) openReview(pending);
+        else if (pendingId) { clearDraft(pendingScope); clearDraft(reviewScope(pendingId)); }
+      })
+      .catch(e => { if (!disposed) { setQuestions([]); setError((e as Error).message); } });
+    return () => { disposed = true; };
+  }, [examAttemptId, account.id]);
 
   const selected = questions?.find(q => q.id === questionId);
   const input = `w-full rounded-xl border p-3 text-sm ${dark ? 'bg-slate-950/50 border-white/20 text-white' : 'bg-white/75 border-slate-300 text-slate-900'}`;
@@ -59,14 +90,17 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
       if (files.length && !answer.trim() && ocrMode !== 'manual') {
         setScanned(true); setPhase('reading');
         const pending = await request<Result>('/student/answers/draft', { method: 'POST', body: form });
-        setDraft(pending); setReviewedText(pending.transcript); setPreviewPage(0); setPhase('review');
+        openReview(pending);
+        setAnswerNotice(clearDraft(answerScope(questionId))); setAnswer('');
       } else {
         setScanned(false); setPhase('grading');
         const submitted = await request<Result>('/student/answers', { method: 'POST', body: form });
+        setAnswerNotice(clearDraft(answerScope(questionId))); setAnswer('');
         if (submitted.status === 'pending') {
-          setDraft(submitted); setReviewedText(submitted.transcript); setPreviewPage(0); setPhase('review');
-        } else { setResult(submitted); setPhase('ready'); }
+          openReview(submitted);
+        } else { setResult(submitted); setPhase('ready'); clearDraft(pendingScope); }
       }
+      setFiles([]); if (fileInput.current) fileInput.current.value = '';
       setHistory(await request<Result[]>(historyPath));
       onSubmitted();
     } catch (e) { setError((e as Error).message); setPhase(prev => prev === 'reading' || prev === 'grading' ? 'idle' : prev); }
@@ -78,8 +112,9 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
     setBusy(true); setError(''); setPhase('grading');
     try {
       const scored = await request<Result>(`/student/answers/${draft.id}/grade`, json('POST', { text: reviewedText }));
-      if (scored.status === 'graded') { setResult(scored); setDraft(null); setPhase('ready'); }
-      else { setDraft(scored); setPhase('review'); }
+      if (scored.status === 'graded') {
+        setResult(scored); setDraft(null); setPhase('ready'); setReviewNotice(clearDraft(reviewScope(scored.id))); clearDraft(pendingScope);
+      } else { setDraft(scored); setPhase('review'); }
       setHistory(await request<Result[]>(historyPath));
       onSubmitted();
     } catch (e) { setError((e as Error).message); setPhase(prev => prev === 'grading' ? 'review' : prev); }
@@ -97,7 +132,9 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
       {questions && questions.length > 0 && <form onSubmit={submit} className="space-y-4">
         <label className="block text-sm font-semibold">Question
           <select disabled={busy} className={`${input} mt-1`} value={questionId} onChange={e => {
-            setQuestionId(e.target.value); setResult(null); setDraft(null); setPhase('idle'); setAnswer(''); setFiles([]);
+            const id = e.target.value;
+            setQuestionId(id); writeDraft(selectionScope, id); restoreAnswer(id);
+            setResult(null); setDraft(null); setPhase('idle'); setFiles([]); clearDraft(pendingScope);
             if (fileInput.current) fileInput.current.value = '';
           }}>
             {questions.map(q => <option key={q.id} value={q.id}>{q.code} · {q.title} ({q.maxMarks} marks)</option>)}
@@ -107,8 +144,15 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
           <strong>{selected.subject} · Maximum {selected.maxMarks} marks</strong><p className="mt-2">{selected.prompt}</p>
         </div>}
         <label className="block text-sm font-semibold">Type your answer
-          <textarea disabled={busy} className={`${input} mt-1 min-h-36`} value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Type here, or upload answer pages below" />
+          <textarea disabled={busy} className={`${input} mt-1 min-h-36`} value={answer} onChange={e => {
+            const text = e.target.value; setAnswer(text); writeDraft(selectionScope, questionId);
+            setAnswerNotice(text ? writeDraft(answerScope(questionId), text) : clearDraft(answerScope(questionId)));
+          }} placeholder="Type here, or upload answer pages below" />
         </label>
+        <DraftStatus notice={answerNotice} />
+        {answer && <button type="button" disabled={busy} className="text-xs underline" onClick={() => {
+          setAnswer(''); setAnswerNotice(clearDraft(answerScope(questionId)));
+        }}>Discard saved answer</button>}
         <label className="block text-sm font-semibold">Answer images (optional, up to 12 pages)
           <input disabled={busy} ref={fileInput} className={`${input} mt-1`} type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => setFiles(Array.from(e.target.files || []))} />
         </label>
@@ -120,11 +164,12 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
         <button className="alpine-btn-blue text-white w-full p-3 font-bold disabled:opacity-50" disabled={busy || (!answer.trim() && !files.length) || (ocrMode === 'manual' && !answer.trim())}>
           {busy ? 'Working…' : files.length && !answer.trim() ? 'Read images for review' : 'Submit and get result'}
         </button>
-        <p className="text-xs opacity-70">For images, check and correct the extracted words before the model assigns marks.</p>
+        <p className="text-xs opacity-70">Text drafts are saved on this browser. Unsubmitted images must be selected again after a refresh. Review extracted words before grading.</p>
       </form>}
       <WorkProgress phase={phase} busy={busy} scanned={scanned} />
       {draft && <div className="space-y-3 border-t border-slate-400/30 pt-5">
         <h3 className="font-bold">Review answer and retry grading</h3>
+        <p className="text-sm font-semibold">{draft.questionTitle}</p>
         <p className="text-xs opacity-75">Check your answer text and any uploaded pages. Confirm to grade this saved attempt.</p>
         {draft.pages.length > 0 && <div>
           <div className="flex gap-2 flex-wrap">{draft.pages.map(page => <button key={page.position} type="button"
@@ -135,7 +180,11 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
         </div>}
         {draft.ocrError && <p className="text-xs text-amber-600">OCR issue: {draft.ocrError}</p>}
         <textarea disabled={busy} className={`${input} min-h-40`} aria-label="Corrected answer text" value={reviewedText}
-          onChange={e => setReviewedText(e.target.value)} placeholder="Correct the OCR text here or type the answer if it could not be read" />
+          onChange={e => { setReviewedText(e.target.value); setReviewNotice(writeDraft(reviewScope(draft.id), e.target.value)); }} placeholder="Correct the OCR text here or type the answer if it could not be read" />
+        <DraftStatus notice={reviewNotice} />
+        <button type="button" disabled={busy} className="text-xs underline" onClick={() => {
+          setReviewedText(draft.transcript); setReviewNotice(clearDraft(reviewScope(draft.id)));
+        }}>Reset to saved transcript</button>
         {draft.message && <p className="text-xs text-amber-600">{draft.message}</p>}
         <button type="button" onClick={confirmAndGrade} disabled={busy || !reviewedText.trim()}
           className="alpine-btn-blue text-white w-full p-3 font-bold disabled:opacity-50">
@@ -178,8 +227,8 @@ export function StudentSubmitView({ theme, account, onSubmitted, examAttemptId, 
         <div className="space-y-2 mt-3">{history.map(item => <button key={item.id} type="button" disabled={busy} onClick={() => {
           setPreviewPage(0); setError('');
           setScanned(item.pages.length > 0);
-          if (item.status === 'pending') { setResult(null); setDraft(item); setReviewedText(item.transcript); setPhase('review'); }
-          else { setResult(item); setDraft(null); setPhase('ready'); }
+          if (item.status === 'pending') openReview(item);
+          else { setResult(item); setDraft(null); setPhase('ready'); clearDraft(pendingScope); }
         }}
           className="w-full text-left rounded-xl border border-slate-400/30 p-3 text-sm flex justify-between gap-3">
           <span><strong>{item.questionTitle}</strong><span className="block text-xs opacity-70">{new Date(item.submittedAt).toLocaleString()}</span></span>

@@ -3,6 +3,8 @@ import { MCQQuestion, MCQStudentAttempt } from '../types';
 import { request } from '../api';
 import { downloadCsv, printReport } from '../reports';
 import { WorkPhase, WorkProgress } from './WorkProgress';
+import { clearDraft, DraftNotice, DraftScope, emptyDraftNotice, readChoicesDraft, writeChoicesDraft } from '../drafts';
+import { DraftStatus } from './DraftStatus';
 
 type Props = {
   mcqs: MCQQuestion[]; studentAttempts: MCQStudentAttempt[]; theme: 'light' | 'dark'; workspace: 'grading' | 'admin';
@@ -10,12 +12,13 @@ type Props = {
   onDeleteMCQ: (id: string) => Promise<void>;
   onCreateAttempt: (name: string, id: string, answers: Record<string, string>) => Promise<MCQStudentAttempt>;
   studentIdentity?: { name: string; id: string };
+  draftAccountId?: string;
 };
 const empty = { code: '', subject: 'General', question: '', options: [
   { key: 'A' as const, text: '' }, { key: 'B' as const, text: '' },
   { key: 'C' as const, text: '' }, { key: 'D' as const, text: '' }], correctKey: 'A' as const, explanation: '' };
 
-export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onUpdateMCQ, onDeleteMCQ, onCreateAttempt, studentIdentity }: Props) => {
+export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onUpdateMCQ, onDeleteMCQ, onCreateAttempt, studentIdentity, draftAccountId }: Props) => {
   const dark = theme === 'dark';
   const card = `alpine-card ${dark ? 'text-slate-100' : 'light-theme text-slate-900'}`;
   const input = `w-full rounded-lg p-2 border text-sm ${dark ? 'bg-slate-950/50 text-white border-white/20' : 'bg-white/75 text-slate-900 border-slate-300'}`;
@@ -25,6 +28,17 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
   const [name, setName] = useState('');
   const [studentId, setStudentId] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [draftNotice, setDraftNotice] = useState<DraftNotice>(emptyDraftNotice);
+  const choiceScope: DraftScope | null = draftAccountId && workspace !== 'admin'
+    ? { accountId: draftAccountId, kind: 'mcq', id: 'practice' } : null;
+  const questionSignature = JSON.stringify(mcqs.map(q => [q.id, q.options.map(option => option.key)]));
+  useEffect(() => {
+    const saved = choiceScope ? readChoicesDraft(choiceScope, mcqs) : { value: null, notice: emptyDraftNotice };
+    setAnswers(saved.value || {}); setDraftNotice(saved.notice);
+  }, [draftAccountId, workspace, questionSignature]);
+  const saveAnswers = (next: Record<string, string>) => {
+    setAnswers(next); if (choiceScope) setDraftNotice(writeChoicesDraft(choiceScope, next));
+  };
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<WorkPhase>('idle');
   const [scanned, setScanned] = useState(false);
@@ -45,6 +59,7 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
     event.preventDefault(); setBusy(true); setPhase('grading');
     try {
       setLatestAttempt(await onCreateAttempt(studentIdentity?.name || name, studentIdentity?.id || studentId, answers));
+      if (choiceScope) setDraftNotice(clearDraft(choiceScope));
       setName(''); setStudentId(''); setAnswers({});
       setPhase('ready');
     } catch { setPhase(scanned ? 'review' : 'idle'); /* App displays the error. */ } finally { setBusy(false); }
@@ -56,7 +71,7 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
     try {
       const detected = await request<{ answers: Record<string, string>; uncertainCodes: string[] }>('/student/mcqs/scan',
         { method: 'POST', body: form });
-      setAnswers(detected.answers); setUncertainCodes(detected.uncertainCodes);
+      saveAnswers(detected.answers); setUncertainCodes(detected.uncertainCodes);
       setPhase('review');
     } catch (e) { setScanError((e as Error).message); setPhase('idle'); }
     finally { setBusy(false); }
@@ -91,11 +106,13 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
           <legend className="font-semibold text-sm">{q.code} · Question {i + 1} · 1 mark</legend><p className="text-sm mb-2">{q.question}</p>
           {q.options.map(option => <label key={option.key} className="flex items-center gap-2 py-1 text-sm">
             <input type="radio" name={q.id} checked={answers[q.id] === option.key}
-              onChange={() => setAnswers(prev => ({ ...prev, [q.id]: option.key }))} />
+              onChange={() => saveAnswers({ ...answers, [q.id]: option.key })} />
             {option.key}. {option.text}
           </label>)}
-          <button type="button" className="text-xs underline mt-1" onClick={() => setAnswers(prev => ({ ...prev, [q.id]: '' }))}>Clear answer</button>
+          <button type="button" className="text-xs underline mt-1" onClick={() => saveAnswers({ ...answers, [q.id]: '' })}>Clear answer</button>
         </fieldset>)}
+        {choiceScope && <><DraftStatus notice={draftNotice} /><p className="text-xs opacity-70">Unsubmitted choices are saved in this browser.</p>
+          {Object.values(answers).some(Boolean) && <button type="button" disabled={busy} className="text-xs underline" onClick={() => saveAnswers({})}>Discard saved choices</button>}</>}
         <button disabled={busy || !mcqs.length} className="alpine-btn-blue px-5 py-2.5 text-sm text-white font-bold disabled:opacity-50">
           {busy && phase === 'grading' ? 'Scoring…' : 'Score attempt'}</button>
         <WorkProgress phase={phase} busy={busy} scanned={scanned} mode="mcq" />

@@ -10,7 +10,8 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test:api": "node scripts/test-api.mjs",
-    "test:reports": "node scripts/test-reports.mjs"
+    "test:reports": "node scripts/test-reports.mjs",
+    "test:drafts": "node scripts/test-drafts.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

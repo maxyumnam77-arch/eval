@@ -5,7 +5,7 @@ import { transformWithOxc } from 'vite';
 
 const source = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
 const { code } = await transformWithOxc(source, 'api.ts');
-const { request, setAuthToken, getAuthToken, ApiError } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { request, requestBlob, setAuthToken, getAuthToken, ApiError } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const values = new Map();
 globalThis.sessionStorage = {
   getItem: key => values.get(key) || null,
@@ -58,4 +58,34 @@ test('network failure keeps the session available for recovery', async () => {
 test('field validation errors explain which value needs correction', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ detail: [{ loc: ['body', 'maxMarks'], msg: 'Must be positive' }] }), { status: 422 });
   await assert.rejects(request('/questions'), /maxMarks: Must be positive/);
+});
+
+test('backup downloads use the signed-in account and preserve binary contents', async () => {
+  setAuthToken('admin-session');
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, '/api/backup');
+    assert.equal(options.headers.get('Authorization'), 'Bearer admin-session');
+    return new Response(new Uint8Array([80, 75, 0, 255]), { headers: { 'Content-Type': 'application/zip' } });
+  };
+  const blob = await requestBlob('/backup');
+  assert.equal(blob.type, 'application/zip');
+  assert.deepEqual([...new Uint8Array(await blob.arrayBuffer())], [80, 75, 0, 255]);
+});
+
+test('a download cannot complete into a different signed-in account', async () => {
+  setAuthToken('old-admin');
+  let finish;
+  globalThis.fetch = async () => ({ ok: true, blob: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = requestBlob('/backup');
+  while (!finish) await new Promise(resolve => setTimeout(resolve, 0));
+  setAuthToken('new-student'); finish(new Blob(['private-backup']));
+  await assert.rejects(pending, error => error.status === 409);
+  assert.equal(getAuthToken(), 'new-student'); assert.equal(expirations, 0);
+});
+
+test('binary download errors are shown instead of saving a false ZIP', async () => {
+  setAuthToken('student-session');
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: 'Admin access required.' }), { status: 403 });
+  await assert.rejects(requestBlob('/backup'), /Admin access required/);
+  assert.equal(getAuthToken(), 'student-session');
 });

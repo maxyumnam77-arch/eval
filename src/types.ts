@@ -99,4 +99,4 @@ export type ExamAttempt = {
     submissionId?: string; studentAnswer?: string; correctKey?: string })[];
 };
 
-export type ActiveNavTab = 'submit' | 'grade' | 'bank' | 'mcq' | 'results' | 'model' | 'exams' | 'progress';
+export type ActiveNavTab = 'submit' | 'grade' | 'bank' | 'mcq' | 'results' | 'model' | 'exams' | 'progress' | 'backup';

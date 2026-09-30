@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from . import auth, db, grading
-from . import exams
+from . import backups, exams
 
 
 def now():
@@ -111,6 +111,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Smart Exam Evaluation", version="1.0", lifespan=lifespan)
 app.include_router(exams.router)
+app.include_router(backups.router)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
                    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Authorization"])
 

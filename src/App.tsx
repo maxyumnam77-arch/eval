@@ -12,6 +12,7 @@ import { StudentSubmitView } from './components/StudentSubmitView';
 import { Account, LoginView, Session } from './components/LoginView';
 import { ExamView } from './components/ExamView';
 import { PerformanceView } from './components/PerformanceView';
+import { BackupView } from './components/BackupView';
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -168,6 +169,7 @@ export default function App() {
             onCreateSubmission={createSubmission} onGradeSubmission={gradeSubmission} onUpdateSubmissionTranscript={updateTranscript} />
             : <div className={`alpine-card ${!isDark ? 'light-theme' : ''} p-8`}>Create a question and approve its rubric in Question Bank to begin.</div>)}
           {activeTab === 'mcq' && <MCQView mcqs={mcqs} studentAttempts={attempts} theme={theme} workspace={workspace === 'student' ? 'grading' : 'admin'}
+            draftAccountId={workspace === 'student' ? account?.id : undefined}
             studentIdentity={workspace === 'student' && account ? { name: account.displayName, id: account.username } : undefined}
             onAddMCQ={createMCQ} onUpdateMCQ={updateMCQ} onDeleteMCQ={deleteMCQ} onCreateAttempt={createAttempt} />}
           {activeTab === 'results' && <ResultsReviewView questions={questions} submissions={submissions} theme={theme}
@@ -176,6 +178,7 @@ export default function App() {
           {activeTab === 'model' && <ModelEvaluationView theme={theme} />}
           {activeTab === 'exams' && account && <ExamView key={workspace} theme={theme} workspace={workspace} account={account} questions={questions} mcqs={mcqs} />}
           {activeTab === 'progress' && account && <PerformanceView theme={theme} account={account} />}
+          {activeTab === 'backup' && workspace === 'admin' && <BackupView theme={theme} />}
         </>}
       </main>
       {question && <QuestionSelectModal questions={questions} selectedQuestionId={selectedQuestionId} isOpen={isQuestionModalOpen}

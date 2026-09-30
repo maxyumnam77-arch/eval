@@ -4,6 +4,8 @@ import { DescriptiveQuestion, ExamAttempt, ExamDefinition, MCQQuestion, StudentQ
 import { Account } from './LoginView';
 import { StudentSubmitView } from './StudentSubmitView';
 import { downloadCsv, printReport } from '../reports';
+import { clearDraft, DraftNotice, DraftScope, emptyDraftNotice, readChoicesDraft, readTextDraft, writeChoicesDraft, writeDraft } from '../drafts';
+import { DraftStatus } from './DraftStatus';
 
 type Draft = { id: string; title: string; description: string; published: boolean; items: { kind: 'descriptive' | 'mcq'; questionId: string }[] };
 const empty: Draft = { id: '', title: '', description: '', published: false, items: [] };
@@ -18,10 +20,15 @@ export function ExamView({ theme, workspace, account, questions, mcqs }: {
   const [activeId, setActiveId] = useState('');
   const [draft, setDraft] = useState<Draft>(empty);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [draftNotice, setDraftNotice] = useState<DraftNotice>(emptyDraftNotice);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const active = attempts.find(a => a.id === activeId);
+  const activeScope: DraftScope = { accountId: account.id, kind: 'exam-selection', id: workspace };
+  const choiceScope: DraftScope = { accountId: account.id, kind: 'exam-mcq', id: activeId };
+  const selectAttempt = (id: string) => { setActiveId(id); writeDraft(activeScope, id); };
+  const saveAnswers = (next: Record<string, string>) => { setAnswers(next); setDraftNotice(writeChoicesDraft(choiceScope, next)); };
   const dark = theme === 'dark';
   const card = `alpine-card ${dark ? 'text-slate-100' : 'light-theme text-slate-900'} p-5`;
   const input = `w-full rounded-lg border p-2 text-sm ${dark ? 'bg-slate-950/50 border-white/20 text-white' : 'bg-white/75 border-slate-300 text-slate-900'}`;
@@ -31,9 +38,25 @@ export function ExamView({ theme, workspace, account, questions, mcqs }: {
       request<ExamAttempt[]>(admin ? '/exam-attempts' : '/student/exam-attempts'),
     ]);
     setExams(sets); setAttempts(saved);
+    return saved;
   };
-  useEffect(() => { refresh().catch(e => setError((e as Error).message)).finally(() => setLoading(false)); }, [workspace]);
-  useEffect(() => setAnswers({}), [activeId]);
+  useEffect(() => {
+    let disposed = false;
+    refresh().then(saved => {
+      if (disposed) return;
+      const previous = readTextDraft(activeScope).value;
+      if (saved.some(a => a.id === previous)) setActiveId(previous!);
+    }).catch(e => { if (!disposed) setError((e as Error).message); }).finally(() => { if (!disposed) setLoading(false); });
+    return () => { disposed = true; };
+  }, [workspace, account.id]);
+  useEffect(() => {
+    const mcqItems = active?.items.filter(item => item.kind === 'mcq');
+    if (admin || !active || !mcqItems?.length || mcqItems.every(item => item.status === 'graded')) {
+      setAnswers({}); setDraftNotice(emptyDraftNotice); return;
+    }
+    const saved = readChoicesDraft(choiceScope, mcqItems.map(item => item.question as MCQQuestion));
+    setAnswers(saved.value || {}); setDraftNotice(saved.notice);
+  }, [active?.id, account.id, admin]);
   const run = async (action: () => Promise<void>) => {
     setBusy(true); setError('');
     try { await action(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -45,7 +68,7 @@ export function ExamView({ theme, workspace, account, questions, mcqs }: {
   const isSelected = (kind: string, id: string) => draft.items.some(item => item.kind === kind && item.questionId === id);
   const start = (id: string) => run(async () => {
     const started = await request<ExamAttempt>(`/student/exams/${id}/attempts`, { method: 'POST' });
-    await refresh(); setActiveId(started.id);
+    await refresh(); selectAttempt(started.id);
   });
   const columns = ['Code', 'Question', 'Type', 'Status', 'Score', 'Maximum'];
   const resultRows = active?.items.map(item => [item.question.code, item.kind === 'descriptive' ? item.question.title : item.question.question,
@@ -101,7 +124,7 @@ export function ExamView({ theme, workspace, account, questions, mcqs }: {
         {loading && <p className="text-sm opacity-70">Loading exams and saved attempts…</p>}
         {!attempts.length && !loading && <p className="text-sm opacity-70">No exam attempts yet.</p>}
         {attempts.map(attempt => <button key={attempt.id} type="button" className={`w-full text-left rounded-xl border p-3 text-sm ${activeId === attempt.id ? 'border-blue-500 bg-blue-500/10' : 'border-slate-400/30'}`}
-          onClick={() => setActiveId(attempt.id)}><strong>{attempt.title} {admin && `· ${attempt.studentName}`}</strong>
+          onClick={() => selectAttempt(attempt.id)}><strong>{attempt.title} {admin && `· ${attempt.studentName}`}</strong>
           <span className="block text-xs opacity-70">{attempt.status === 'completed' ? `${attempt.score}/${attempt.maxMarks}` : `${attempt.completedQuestions}/${attempt.totalQuestions} questions graded`} · {new Date(attempt.startedAt).toLocaleString()}</span></button>)}
       </section>
     </div>
@@ -128,14 +151,18 @@ export function ExamView({ theme, workspace, account, questions, mcqs }: {
           {active.items.map(item => item.kind === 'mcq' && <p key={item.question.id}>{item.question.code}: {item.studentAnswer || 'Blank'} · key {item.correctKey} · {item.score}/{item.maxMarks}</p>)}
         </div> : <form className="space-y-3" onSubmit={event => {
           event.preventDefault(); void run(async () => {
-            await request(`/student/exam-attempts/${active.id}/mcqs`, json('POST', { answers })); await refresh();
+            const scored = await request<ExamAttempt>(`/student/exam-attempts/${active.id}/mcqs`, json('POST', { answers }));
+            setAttempts(prev => prev.map(a => a.id === scored.id ? scored : a));
+            setAnswers({}); setDraftNotice(clearDraft(choiceScope)); await refresh();
           });
         }}>{active.items.map(item => item.kind === 'mcq' && <fieldset disabled={busy} key={item.question.id} className="rounded-lg border border-slate-400/30 p-3 text-sm">
           <legend className="font-bold">{item.question.code} · 1 mark</legend><p className="mb-2">{item.question.question}</p>
           {item.question.options.map(option => <label key={option.key} className="flex items-center gap-2 py-1"><input type="radio" name={`exam-${item.question.id}`}
-            checked={answers[item.question.id] === option.key} onChange={() => setAnswers({ ...answers, [item.question.id]: option.key })} />{option.key}. {option.text}</label>)}
-          <button type="button" className="text-xs underline mt-1" onClick={() => setAnswers({ ...answers, [item.question.id]: '' })}>Clear answer</button>
+            checked={answers[item.question.id] === option.key} onChange={() => saveAnswers({ ...answers, [item.question.id]: option.key })} />{option.key}. {option.text}</label>)}
+          <button type="button" className="text-xs underline mt-1" onClick={() => saveAnswers({ ...answers, [item.question.id]: '' })}>Clear answer</button>
         </fieldset>)}<p className="text-xs opacity-70">Blank and wrong answers earn 0. All MCQs are scored together.</p>
+          <DraftStatus notice={draftNotice} /><p className="text-xs opacity-70">Unsubmitted choices are saved in this browser for this exam attempt.</p>
+          {Object.values(answers).some(Boolean) && <button type="button" disabled={busy} className="text-xs underline block" onClick={() => saveAnswers({})}>Discard saved choices</button>}
           <button disabled={busy} className="alpine-btn-blue text-white px-4 py-2 text-sm">{busy ? 'Scoring…' : 'Score exam MCQs'}</button>
         </form>}
       </section>}

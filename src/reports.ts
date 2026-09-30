@@ -10,7 +10,11 @@ export function csvText(columns: string[], rows: Cell[][]) {
 }
 
 export function downloadCsv(filename: string, columns: string[], rows: Cell[][]) {
-  const url = URL.createObjectURL(new Blob([csvText(columns, rows)], { type: 'text/csv;charset=utf-8' }));
+  downloadBlob(filename, new Blob([csvText(columns, rows)], { type: 'text/csv;charset=utf-8' }));
+}
+
+export function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a'); link.href = url; link.download = filename;
   document.body.appendChild(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);

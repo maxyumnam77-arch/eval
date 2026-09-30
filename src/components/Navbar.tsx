@@ -42,6 +42,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'mcq', label: 'MCQ Answer Keys' },
     { id: 'exams', label: 'Exam Sets' },
     { id: 'model', label: 'Model & Evaluation' },
+    { id: 'backup', label: 'Backups' },
   ];
   const tabs = workspace === 'student' ? studentTabs : adminTabs;
 

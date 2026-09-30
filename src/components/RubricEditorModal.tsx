@@ -16,7 +16,7 @@ interface RubricEditorModalProps {
   isOpen: boolean;
   theme?: 'light' | 'dark';
   onClose: () => void;
-  onSaveQuestion: (updated: DescriptiveQuestion) => void;
+  onSaveQuestion: (updated: DescriptiveQuestion) => Promise<void>;
 }
 
 export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
@@ -32,6 +32,7 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
     question.criteria.map((c) => ({ ...c }))
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (isOpen) {
       setMaxMarks(question.maxMarks);
@@ -102,20 +103,17 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
 
   const handleAutoDistribute = () => {
     if (criteria.length === 0) return;
-    const equalShare = Number((maxMarks / criteria.length).toFixed(2));
+    const cents = Math.round(maxMarks * 100);
+    if (cents < criteria.length) { setErrorMessage('There are too many criteria for a positive mark each.'); return; }
+    const share = Math.floor(cents / criteria.length);
     const distributed = criteria.map((c, idx) => {
-      if (idx === criteria.length - 1) {
-        const previousSum = equalShare * (criteria.length - 1);
-        const lastWeight = Number((maxMarks - previousSum).toFixed(2));
-        return { ...c, maxMark: Math.max(0.1, lastWeight) };
-      }
-      return { ...c, maxMark: equalShare };
+      return { ...c, maxMark: (share + (idx < cents % criteria.length ? 1 : 0)) / 100 };
     });
     setCriteria(distributed);
     setErrorMessage(null);
   };
 
-  const handleApproveAndSave = () => {
+  const handleApproveAndSave = async () => {
     if (maxMarks <= 0) {
       setErrorMessage('Maximum mark must be a positive number greater than 0.');
       return;
@@ -128,7 +126,7 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
       );
       return;
     }
-    if (criteria.some(c => !c.title.trim() || !c.description.trim() || c.description.includes('Edit this draft'))) {
+    if (criteria.some(c => !c.title.trim() || !c.description.trim() || c.description.includes('Edit this draft') || c.maxMark <= 0)) {
       setErrorMessage('Replace the draft with specific, assessable expectations before approving.');
       return;
     }
@@ -142,8 +140,10 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
       approvedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    onSaveQuestion(updated);
-    onClose();
+    setSaving(true); setErrorMessage(null);
+    try { await onSaveQuestion(updated); onClose(); }
+    catch (e) { setErrorMessage((e as Error).message); }
+    finally { setSaving(false); }
   };
 
   if (!isOpen) return null;
@@ -342,8 +342,8 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
                       <span className={`text-xs ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>Weight:</span>
                       <input
                         type="number"
-                        min="0.1"
-                        step="0.5"
+                        min="0.01"
+                        step="0.01"
                         value={crit.maxMark}
                         onChange={(e) => {
                           const val = parseFloat(e.target.value);
@@ -478,7 +478,7 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
             <button
               type="button"
               onClick={handleApproveAndSave}
-              disabled={!isBalanced}
+              disabled={!isBalanced || saving}
               className={`px-5 py-2.5 text-xs font-semibold rounded-xl flex items-center gap-2 shadow-lg transition-all ${
                 isBalanced
                   ? 'bg-blue-600 hover:bg-blue-500 text-white border border-blue-400/50 cursor-pointer shadow-blue-900/50'
@@ -486,7 +486,7 @@ export const RubricEditorModal: React.FC<RubricEditorModalProps> = ({
               }`}
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Approve & Lock Rubric</span>
+              <span>{saving ? 'Saving…' : 'Approve & Lock Rubric'}</span>
             </button>
           </div>
         </div>

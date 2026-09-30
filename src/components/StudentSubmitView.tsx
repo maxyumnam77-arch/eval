@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { getAuthToken, json, request } from '../api';
+import { json, request } from '../api';
 import { Account } from './LoginView';
+import { AnswerImage } from './AnswerImage';
 
 type Question = { id: string; code: string; title: string; prompt: string; subject: string; maxMarks: number };
 type Result = {
@@ -23,7 +24,6 @@ export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'lig
   const [reviewedText, setReviewedText] = useState('');
   const [history, setHistory] = useState<Result[]>([]);
   const [previewPage, setPreviewPage] = useState(0);
-  const [previewUrl, setPreviewUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -32,17 +32,6 @@ export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'lig
       .then(([items, saved]) => { setQuestions(items); setQuestionId(items[0]?.id || ''); setHistory(saved); })
       .catch(e => { setQuestions([]); setError((e as Error).message); });
   }, []);
-
-  useEffect(() => {
-    const page = draft?.pages[previewPage];
-    if (!page) return;
-    let url = '';
-    fetch(page.url, { headers: { Authorization: `Bearer ${getAuthToken() || ''}` } })
-      .then(response => { if (!response.ok) throw new Error('Page unavailable'); return response.blob(); })
-      .then(blob => { url = URL.createObjectURL(blob); setPreviewUrl(url); })
-      .catch(() => setPreviewUrl(''));
-    return () => { if (url) URL.revokeObjectURL(url); setPreviewUrl(''); };
-  }, [draft, previewPage]);
 
   const selected = questions?.find(q => q.id === questionId);
   const input = `w-full rounded-xl border p-3 text-sm ${dark ? 'bg-slate-950/50 border-white/20 text-white' : 'bg-white/75 border-slate-300 text-slate-900'}`;
@@ -61,7 +50,10 @@ export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'lig
         const pending = await request<Result>('/student/answers/draft', { method: 'POST', body: form });
         setDraft(pending); setReviewedText(pending.transcript); setPreviewPage(0);
       } else {
-        setResult(await request<Result>('/student/answers', { method: 'POST', body: form }));
+        const submitted = await request<Result>('/student/answers', { method: 'POST', body: form });
+        if (submitted.status === 'pending') {
+          setDraft(submitted); setReviewedText(submitted.transcript); setPreviewPage(0);
+        } else setResult(submitted);
       }
       setHistory(await request<Result[]>('/student/answers'));
       onSubmitted();
@@ -116,13 +108,14 @@ export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'lig
         <p className="text-xs opacity-70">For images, check and correct the extracted words before the model assigns marks.</p>
       </form>}
       {draft && <div className="space-y-3 border-t border-slate-400/30 pt-5">
-        <h3 className="font-bold">Review scanned answer</h3>
-        <p className="text-xs opacity-75">Check the original page against the OCR text. Your corrected text is what gets graded.</p>
+        <h3 className="font-bold">Review answer and retry grading</h3>
+        <p className="text-xs opacity-75">Check your answer text and any uploaded pages. Confirm to grade this saved attempt.</p>
         {draft.pages.length > 0 && <div>
           <div className="flex gap-2 flex-wrap">{draft.pages.map(page => <button key={page.position} type="button"
             onClick={() => setPreviewPage(page.position)} className={`text-xs px-3 py-1.5 rounded-lg border ${previewPage === page.position ? 'bg-blue-600 text-white' : ''}`}>
             Page {page.position + 1}</button>)}</div>
-          {previewUrl && <img src={previewUrl} alt={`Uploaded answer page ${previewPage + 1}`} className="w-full max-h-72 object-contain mt-2 rounded-lg border" />}
+          <AnswerImage src={draft.pages.find(page => page.position === previewPage)?.url}
+            alt={`Uploaded answer page ${previewPage + 1}`} className="w-full max-h-72 object-contain mt-2 rounded-lg border" />
         </div>}
         {draft.ocrError && <p className="text-xs text-amber-600">OCR issue: {draft.ocrError}</p>}
         <textarea className={`${input} min-h-40`} aria-label="Corrected answer text" value={reviewedText}
@@ -155,7 +148,11 @@ export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'lig
       <div className="border-t border-slate-400/30 mt-6 pt-5">
         <h3 className="font-bold">Your previous answers ({history.length})</h3>
         {!history.length && <p className="text-sm opacity-70 mt-2">No attempts yet.</p>}
-        <div className="space-y-2 mt-3">{history.map(item => <button key={item.id} type="button" onClick={() => { setResult(item); if (item.status === 'pending') { setDraft(item); setReviewedText(item.transcript); } }}
+        <div className="space-y-2 mt-3">{history.map(item => <button key={item.id} type="button" disabled={busy} onClick={() => {
+          setPreviewPage(0); setError('');
+          if (item.status === 'pending') { setResult(null); setDraft(item); setReviewedText(item.transcript); }
+          else { setResult(item); setDraft(null); }
+        }}
           className="w-full text-left rounded-xl border border-slate-400/30 p-3 text-sm flex justify-between gap-3">
           <span><strong>{item.questionTitle}</strong><span className="block text-xs opacity-70">{new Date(item.submittedAt).toLocaleString()}</span></span>
           <span className="font-bold whitespace-nowrap">{item.status === 'graded' ? `${item.score}/${item.maxMarks}` : 'Pending'}</span>

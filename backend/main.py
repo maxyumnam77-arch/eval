@@ -12,7 +12,8 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from . import auth, db, grading
 
@@ -32,14 +33,18 @@ def clean_mark(value):
     return number
 
 
-class CriterionInput(BaseModel):
+class InputModel(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, allow_inf_nan=False)
+
+
+class CriterionInput(InputModel):
     id: str | None = None
     title: str = Field(min_length=1)
     description: str = ""
     maxMark: float = Field(gt=0)
 
 
-class QuestionInput(BaseModel):
+class QuestionInput(InputModel):
     code: str = Field(min_length=1)
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
@@ -51,7 +56,7 @@ class QuestionInput(BaseModel):
     rubricApproved: bool = False
 
 
-class MCQInput(BaseModel):
+class MCQInput(InputModel):
     code: str = Field(min_length=1)
     subject: str = "General"
     question: str = Field(min_length=1)
@@ -60,17 +65,24 @@ class MCQInput(BaseModel):
     explanation: str = ""
 
 
-class AttemptInput(BaseModel):
+class AttemptInput(InputModel):
     studentName: str = Field(min_length=1)
     studentId: str = Field(min_length=1)
     answers: dict[str, str]
+
+    @field_validator("answers")
+    @classmethod
+    def valid_answers(cls, answers):
+        if any(answer not in {"A", "B", "C", "D", ""} for answer in answers.values()):
+            raise ValueError("MCQ answers must be A, B, C, D, or blank.")
+        return answers
 
 
 class TranscriptInput(BaseModel):
     text: str
 
 
-class OverrideInput(BaseModel):
+class OverrideInput(InputModel):
     criterionId: str
     mark: float = Field(ge=0)
     note: str = Field(min_length=1)
@@ -80,7 +92,7 @@ class FeedbackInput(BaseModel):
     note: str
 
 
-class TeacherLabelInput(BaseModel):
+class TeacherLabelInput(InputModel):
     mark: float = Field(ge=0)
 
 
@@ -104,7 +116,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http
 @app.middleware("http")
 async def access_control(request: Request, call_next):
     path = request.url.path
-    if not path.startswith("/api/") or path in {"/api/health", "/api/auth/login", "/api/auth/register"}:
+    if request.method == "OPTIONS" or not path.startswith("/api/") or path in {"/api/health", "/api/auth/login", "/api/auth/register"}:
         return await call_next(request)
     header = request.headers.get("Authorization", "")
     token = header[7:] if header.startswith("Bearer ") else ""
@@ -169,6 +181,8 @@ def question_out(conn, row):
 
 def validate_question(payload):
     maximum = clean_mark(payload.maxMarks)
+    if any(c.maxMark != round(c.maxMark, 2) for c in payload.criteria) or payload.maxMarks != maximum:
+        raise HTTPException(422, "Use at most two decimal places for marks.")
     if abs(sum(c.maxMark for c in payload.criteria) - maximum) > 0.005:
         raise HTTPException(422, "Rubric criterion marks must add up exactly to the maximum marks.")
     if len({c.id for c in payload.criteria if c.id}) != len([c for c in payload.criteria if c.id]):
@@ -275,13 +289,15 @@ def submission_out(conn, row):
                          "url": f"/api/submissions/{row['id']}/pages/{p['position']}"} for p in pages]}
     if grade and row["status"] == "graded":
         result.update(grade_out(grade))
+    label = conn.execute("SELECT mark FROM teacher_labels WHERE submission_id=?", (row["id"],)).fetchone()
+    result["teacherLabel"] = label["mark"] if label else None
     return result
 
 
 @app.get("/api/submissions")
 def list_submissions():
     with db.connection() as conn:
-        return [submission_out(conn, row) for row in conn.execute("SELECT * FROM submissions ORDER BY submitted_at DESC")]
+        return [submission_out(conn, row) for row in conn.execute("SELECT * FROM submissions ORDER BY submitted_at DESC, rowid DESC")]
 
 
 def check_image(contents):
@@ -337,7 +353,7 @@ async def add_submission(question_id: str = Form(...), student_name: str = Form(
     if ocr_mode != "manual":
         for filename, image in images:
             try:
-                result = fast_ocr(image) if ocr_mode == "fast" else grading.transcribe(image)
+                result = await run_in_threadpool(fast_ocr if ocr_mode == "fast" else grading.transcribe, image)
                 transcript.append(result)
             except grading.ModelUnavailable as exc:
                 errors.append(f"{filename}: {exc}")
@@ -442,9 +458,9 @@ async def submit_student_answer(request: Request, question_id: str = Form(...), 
     with db.connection() as conn:
         conn.execute("UPDATE submissions SET owner_user_id=? WHERE id=?", (user["id"], submission["id"]))
     if not submission["ocrTranscript"].strip():
-        return student_response(submission, "OCR could not read the answer. Type the answer and submit again.")
+        return student_response(submission, "OCR could not read the answer. Type the answer below and confirm to grade this saved attempt.")
     try:
-        graded = grade_submission(submission["id"])
+        graded = await run_in_threadpool(grade_submission, submission["id"])
     except HTTPException as exc:
         if exc.status_code not in (422, 503):
             raise
@@ -467,8 +483,11 @@ def get_page(sid: str, position: int):
 @app.put("/api/submissions/{sid}/transcript")
 def update_transcript(sid: str, payload: TranscriptInput):
     with db.connection() as conn:
-        if not conn.execute("SELECT 1 FROM submissions WHERE id=?", (sid,)).fetchone():
+        previous = conn.execute("SELECT ocr_transcript FROM submissions WHERE id=?", (sid,)).fetchone()
+        if not previous:
             raise HTTPException(404, "Submission not found.")
+        if previous["ocr_transcript"] != payload.text.strip():
+            conn.execute("DELETE FROM teacher_labels WHERE submission_id=?", (sid,))
         conn.execute("UPDATE submissions SET ocr_transcript=?, status='pending' WHERE id=?", (payload.text.strip(), sid))
         return submission_out(conn, conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone())
 
@@ -493,6 +512,12 @@ def grade_submission(sid: str):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     with db.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT ocr_transcript, status FROM submissions WHERE id=?", (sid,)).fetchone()
+        current_question = conn.execute("SELECT rubric_version FROM questions WHERE id=?", (question["id"],)).fetchone()
+        if (current["ocr_transcript"].strip() != answer or current["status"] != submission["status"]
+                or current_question["rubric_version"] != question["rubricVersion"]):
+            raise HTTPException(409, "The answer or rubric changed during grading. Refresh and try again.")
         gid, timestamp = new_id(), now()
         conn.execute("INSERT INTO grades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
             gid, sid, question["rubricVersion"], json.dumps(question), answer, result["modelName"],
@@ -537,8 +562,10 @@ def mcq_out(row, include_key=True):
 
 def validate_mcq(payload):
     keys = [option.get("key") for option in payload.options]
-    if len(keys) < 2 or len(keys) != len(set(keys)) or payload.correctKey not in keys or any(not str(option.get("text", "")).strip() for option in payload.options):
-        raise HTTPException(422, "Provide at least two distinct, nonempty options and a valid correct key.")
+    if (not 2 <= len(keys) <= 4 or any(not isinstance(key, str) or key not in {"A", "B", "C", "D"} for key in keys)
+            or len(keys) != len(set(keys)) or payload.correctKey not in keys
+            or any(not isinstance(option.get("text"), str) or not option["text"].strip() for option in payload.options)):
+        raise HTTPException(422, "Provide two to four distinct A/B/C/D options with text and a valid correct key.")
 
 
 @app.get("/api/mcqs")
@@ -561,7 +588,7 @@ async def scan_mcq_sheet(file: UploadFile = File(...)):
         if not rows:
             raise HTTPException(409, "No MCQ questions are available.")
     try:
-        by_code, uncertain = grading.detect_mcq_choices(image, [row["code"] for row in rows])
+        by_code, uncertain = await run_in_threadpool(grading.detect_mcq_choices, image, [row["code"] for row in rows])
     except grading.ModelUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     return {"answers": {row["id"]: by_code[row["code"]] for row in rows},
@@ -612,6 +639,12 @@ def grade_mcq_attempt(payload: AttemptInput):
         questions = conn.execute("SELECT * FROM mcqs ORDER BY rowid").fetchall()
         if not questions:
             raise HTTPException(409, "Add MCQ questions before grading an attempt.")
+        if set(payload.answers) - {q["id"] for q in questions}:
+            raise HTTPException(409, "The MCQ question list changed. Refresh before submitting again.")
+        for q in questions:
+            answer = payload.answers.get(q["id"], "")
+            if answer and answer not in {option["key"] for option in json.loads(q["options"])}:
+                raise HTTPException(422, "Select one of the available options for each MCQ.")
         results = []
         for q in questions:
             answer = payload.answers.get(q["id"], "")
@@ -652,16 +685,18 @@ def list_mcq_attempts():
         return [{"id": r["id"], "studentName": r["student_name"], "studentId": r["student_id"],
                  "answers": json.loads(r["answers"]), "results": json.loads(r["results"]),
                  "score": r["score"], "maxMarks": r["max_marks"], "submittedAt": r["submitted_at"]}
-                for r in conn.execute("SELECT * FROM mcq_attempts ORDER BY submitted_at DESC")]
+                for r in conn.execute("SELECT * FROM mcq_attempts ORDER BY submitted_at DESC, rowid DESC")]
 
 
 @app.put("/api/submissions/{sid}/teacher-label")
 def record_teacher_label(sid: str, payload: TeacherLabelInput):
     with db.connection() as conn:
-        row = conn.execute("SELECT q.max_marks FROM submissions s JOIN questions q ON q.id=s.question_id WHERE s.id=?", (sid,)).fetchone()
+        row = conn.execute("SELECT q.max_marks, s.status FROM submissions s JOIN questions q ON q.id=s.question_id WHERE s.id=?", (sid,)).fetchone()
         if not row:
             raise HTTPException(404, "Submission not found.")
-        if payload.mark > row["max_marks"]:
+        saved_grade = conn.execute("SELECT rubric_snapshot FROM grades WHERE submission_id=? ORDER BY graded_at DESC, rowid DESC LIMIT 1", (sid,)).fetchone()
+        maximum = json.loads(saved_grade["rubric_snapshot"])["maxMarks"] if saved_grade and row["status"] == "graded" else row["max_marks"]
+        if payload.mark > maximum:
             raise HTTPException(422, "Teacher mark exceeds the question maximum.")
         conn.execute("INSERT INTO teacher_labels VALUES (?,?,?) ON CONFLICT(submission_id) DO UPDATE SET mark=excluded.mark, recorded_at=excluded.recorded_at",
                      (sid, round(payload.mark, 2), now()))
@@ -672,7 +707,9 @@ def record_teacher_label(sid: str, payload: TeacherLabelInput):
 def evaluation():
     with db.connection() as conn:
         labels = conn.execute("""SELECT l.mark, g.model_total FROM teacher_labels l
-            JOIN grades g ON g.id=(SELECT id FROM grades WHERE submission_id=l.submission_id ORDER BY graded_at DESC, rowid DESC LIMIT 1)""").fetchall()
+            JOIN submissions s ON s.id=l.submission_id
+            JOIN grades g ON g.id=(SELECT id FROM grades WHERE submission_id=l.submission_id ORDER BY graded_at DESC, rowid DESC LIMIT 1)
+            WHERE s.status='graded' AND g.answer_snapshot=s.ocr_transcript""").fetchall()
     errors = [abs(row["mark"] - row["model_total"]) for row in labels]
     correlation = None
     if len(labels) >= 2:

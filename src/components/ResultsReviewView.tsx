@@ -23,7 +23,8 @@ export const ResultsReviewView = ({ questions, submissions, theme, onTeacherOver
   const [busy, setBusy] = useState(false);
   const active = submissions.find(s => s.id === selected) || submissions[0];
   const question = active?.rubricSnapshot || questions.find(q => q.id === active?.questionId);
-  useEffect(() => { setNote(active?.teacherFeedback || ''); setMarks({}); setOverrideNote(''); setTeacherMark(''); }, [active?.id]);
+  useEffect(() => { setNote(active?.teacherFeedback || ''); setMarks({}); setOverrideNote(''); }, [active?.id]);
+  useEffect(() => setTeacherMark(active?.teacherLabel == null ? '' : String(active.teacherLabel)), [active?.id, active?.teacherLabel]);
   const invoke = async (task: () => Promise<void>) => {
     setBusy(true); try { await task(); } catch { /* App displays the error. */ } finally { setBusy(false); }
   };
@@ -57,6 +58,7 @@ export const ResultsReviewView = ({ questions, submissions, theme, onTeacherOver
           <div className={`p-3 rounded-xl text-sm whitespace-pre-wrap ${dark ? 'bg-black/25' : 'bg-white/60'}`}>
             <h4 className="font-bold text-xs mb-2">Reviewed answer transcript</h4>{active.ocrTranscript || 'No text reviewed yet.'}
           </div>
+          {active.teacherLabel != null && <p className="text-xs text-emerald-600">Saved independent teacher mark: {active.teacherLabel} / {question?.maxMarks}</p>}
           {active.status === 'pending' && <div className="space-y-3">
             <div className="flex flex-wrap gap-2 items-center text-xs">
               <label className="font-bold">Independent teacher mark (record before model grading)</label>

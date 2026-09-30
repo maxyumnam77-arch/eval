@@ -4,7 +4,8 @@ Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. T
 
 ## Run on the Mac
 
-Python 3.11+ and Node 20+ are needed. Start the local model you already have:
+Python 3.11+ and Node 20.19+ or 22.12+ are needed. Start the local model you already have:
+Copy `.env.example` to `.env` and edit the provider, served model ID, and local URL as needed. The backend and admin command automatically load this file; exported environment variables take precedence.
 
 - **Ollama:** run `ollama list`. If `qwen3.5:4b` is present, use it; otherwise `ollama pull qwen3.5:4b`. Ollama must be running locally. This one model accepts text and images.
 - **Existing MLX Qwen3.5-4B:** no second model download is needed. Start its existing OpenAI-compatible local server, then set `EVAL_PROVIDER=mlx`, `EVAL_MODEL` to its served model ID, and `EVAL_MODEL_URL` to its loopback URL/port. The old V3.3.7 server does not have to be copied into this repo.
@@ -15,6 +16,7 @@ Terminal 1 (backend):
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
+cp -n .env.example .env
 python -m backend.create_admin
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
@@ -27,6 +29,8 @@ npm run dev
 ```
 
 Create the admin account only once; on later runs, skip `python -m backend.create_admin`. Open **http://127.0.0.1:3000** and sign in with that ID and password. Students create their own ID and password from the sign-in screen. Check **http://127.0.0.1:8000/api/health** if the model is unavailable. The UI and API listen on the local computer. Vite forwards `/api` to FastAPI.
+
+If automatic grading fails, the answer stays in the student's history as **Pending**. Open it and confirm its text to retry the same attempt after restarting the model. Question/rubric forms keep their entered data when a save fails, and uploaded pages require the signed-in account to view.
 
 **OCR:** Accurate uses the configured local Qwen vision model. Fast uses the optional PP-OCR service at `http://127.0.0.1:8001/ocr` (set `PADDLE_OCR_URL` if different). The earlier Paddle service is not included here. For image answers, students inspect and correct the transcript before pressing **Confirm text and get grade**. If OCR fails, they can type the text in that review box. Upload up to 12 ordered pages for one student submission.
 
@@ -76,4 +80,7 @@ The script takes teacher labels from the local SQLite database, extracts token o
 - Student and admin accounts use hashed local passwords, expiring sessions, and role checks. Student answer pages and history are tied to the account that submitted them. This is still a **local academic tool**: do not expose the API to the public internet or commit real student records without a production security review.
 - The MCQ scan reader needs a clear paper layout and real-image validation. Ambiguous marks are left blank for student confirmation; it never decides the academically correct choice.
 
-Checks: `npm run lint`, `npm run build`, and `.venv/bin/python -m pytest backend/tests -q`.
+Checks: `npm run lint`, `npm run build`, `npm run test:api`, and `.venv/bin/python -m pytest backend/tests -q`.
+Install test tooling with `.venv/bin/python -m pip install -r backend/requirements-dev.txt`.
+
+Before submission, run through these on the Mac with the actual model: create and approve a question; register a student; submit a typed answer; upload and correct a photographed answer; retry a pending attempt after stopping/restarting the model; score typed and scanned MCQs; sign in as Admin to view original pages and review results. Compare varied answers against independent teacher marks before reporting grading accuracy.

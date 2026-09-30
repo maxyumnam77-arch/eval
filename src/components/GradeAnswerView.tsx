@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DescriptiveQuestion, StudentSubmission } from '../types';
+import { AnswerImage } from './AnswerImage';
 
 type Props = {
   question: DescriptiveQuestion; submissions: StudentSubmission[]; activeSubmissionId: string;
@@ -21,11 +22,12 @@ export const GradeAnswerView = ({ question, submissions, activeSubmissionId, the
   const [studentId, setStudentId] = useState('');
   const [answerText, setAnswerText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [ocrMode, setOcrMode] = useState('fast');
+  const [ocrMode, setOcrMode] = useState('accurate');
   const [busy, setBusy] = useState(false);
   const [editedText, setEditedText] = useState('');
   const [selectedPage, setSelectedPage] = useState(0);
   const current = submissions.find(s => s.id === activeSubmissionId) || submissions[0];
+  const displayedQuestion = current?.rubricSnapshot || question;
   useEffect(() => { setEditedText(current?.ocrTranscript || ''); setSelectedPage(0); }, [current?.id, current?.ocrTranscript]);
 
   const upload = async (event: React.FormEvent) => {
@@ -105,15 +107,15 @@ export const GradeAnswerView = ({ question, submissions, activeSubmissionId, the
         <div className="border-b-2 border-slate-900 pb-3">
           <p className="text-[11px] uppercase tracking-widest text-slate-500">Smart Exam Evaluation</p>
           <h2 className="font-bold text-lg">{current ? current.studentName : 'No student selected'}</h2>
-          <p className="text-xs text-slate-500">{current?.studentId || 'Add an answer on the left'} · {question.code}</p>
+          <p className="text-xs text-slate-500">{current?.studentId || 'Add an answer on the left'} · {displayedQuestion.code}</p>
         </div>
         <div className="bg-slate-50 border border-slate-200 p-4 rounded-lg">
-          <div className="flex justify-between gap-3 text-xs font-bold"><span>Question</span><span>Max {question.maxMarks} marks</span></div>
-          <p className="text-sm mt-2">{question.prompt}</p>
+          <div className="flex justify-between gap-3 text-xs font-bold"><span>Question</span><span>Max {displayedQuestion.maxMarks} marks</span></div>
+          <p className="text-sm mt-2">{displayedQuestion.prompt}</p>
         </div>
         <div className="border border-emerald-300 bg-emerald-50/50 p-4 rounded-lg">
-          <h3 className="text-sm font-bold mb-2">Teacher rubric · {question.maxMarks} marks</h3>
-          {question.criteria.map(c => <div className="flex justify-between text-xs py-1 border-t border-emerald-100" key={c.id}>
+          <h3 className="text-sm font-bold mb-2">Teacher rubric · {displayedQuestion.maxMarks} marks</h3>
+          {displayedQuestion.criteria.map(c => <div className="flex justify-between text-xs py-1 border-t border-emerald-100" key={c.id}>
             <span>{c.title}: {c.description}</span><strong className="whitespace-nowrap pl-2">{c.maxMark} M</strong>
           </div>)}
         </div>
@@ -122,7 +124,7 @@ export const GradeAnswerView = ({ question, submissions, activeSubmissionId, the
             <h3 className="text-sm font-bold mb-2">Original answer pages</h3>
             <div className="flex gap-2 mb-2">{current.pages.map(page => <button key={page.position} onClick={() => setSelectedPage(page.position)}
               className={`px-3 py-1 rounded-lg text-xs border ${selectedPage === page.position ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>Page {page.position + 1}</button>)}</div>
-            <img className="w-full max-h-[480px] object-contain border rounded-lg" alt={`Student answer page ${selectedPage + 1}`}
+            <AnswerImage className="w-full max-h-[480px] object-contain border rounded-lg" alt={`Student answer page ${selectedPage + 1}`}
               src={current.pages.find(p => p.position === selectedPage)?.url} />
           </div>}
           <div>
@@ -133,12 +135,12 @@ export const GradeAnswerView = ({ question, submissions, activeSubmissionId, the
             <button onClick={saveText} disabled={busy || editedText === current.ocrTranscript} className="text-xs rounded-lg border border-slate-300 px-3 py-2 mt-2 disabled:opacity-50">Save corrected text</button>
           </div>
           {current.status === 'graded' && <div className="border-t pt-4">
-            <h3 className="font-bold text-lg">Score: {current.evaluatedTotalScore} / {question.maxMarks}</h3>
+            <h3 className="font-bold text-lg">Score: {current.evaluatedTotalScore} / {displayedQuestion.maxMarks}</h3>
             <p className="text-xs text-slate-500">Model: {current.modelName} · Rubric version {current.questionVersion}</p>
             {(current.reviewFlags || []).map(flag => <p className="text-xs text-amber-800" key={flag}>Review: {flag}</p>)}
             {current.criteriaScores?.map(score => <div key={score.criterionId} className="py-2 border-b text-sm">
-              <div className="flex justify-between font-semibold"><span>{question.criteria.find(c => c.id === score.criterionId)?.title || score.criterionId}</span>
-                <span>{score.mark} / {question.criteria.find(c => c.id === score.criterionId)?.maxMark}</span></div>
+              <div className="flex justify-between font-semibold"><span>{displayedQuestion.criteria.find(c => c.id === score.criterionId)?.title || score.criterionId}</span>
+                <span>{score.mark} / {displayedQuestion.criteria.find(c => c.id === score.criterionId)?.maxMark}</span></div>
               <p className="text-xs text-slate-600">Evidence: {score.evidence || 'None verified'}</p>
               <p className="text-xs text-slate-600">{score.rationale}</p>
             </div>)}

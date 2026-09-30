@@ -82,7 +82,7 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
           {!!uncertainCodes.length && <p className="text-xs text-amber-600">Unclear or blank: {uncertainCodes.join(', ')}. Select the correct marked choice yourself before scoring.</p>}
         </div>}
         {mcqs.map((q, i) => <fieldset className={`alpine-subcard ${dark ? '' : 'light-theme'} p-4 rounded-xl`} key={q.id}>
-          <legend className="font-semibold text-sm">Question {i + 1} · 1 mark</legend><p className="text-sm mb-2">{q.question}</p>
+          <legend className="font-semibold text-sm">{q.code} · Question {i + 1} · 1 mark</legend><p className="text-sm mb-2">{q.question}</p>
           {q.options.map(option => <label key={option.key} className="flex items-center gap-2 py-1 text-sm">
             <input type="radio" name={q.id} checked={answers[q.id] === option.key}
               onChange={() => setAnswers(prev => ({ ...prev, [q.id]: option.key }))} />

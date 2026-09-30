@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { request, json, getAuthToken, setAuthToken } from './api';
+import { request, json, getAuthToken, setAuthToken, ApiError } from './api';
 import { ActiveNavTab, DescriptiveQuestion, StudentSubmission, MCQQuestion, MCQStudentAttempt } from './types';
 import { Navbar } from './components/Navbar';
 import { GradeAnswerView } from './components/GradeAnswerView';
@@ -27,8 +27,9 @@ export default function App() {
   const [error, setError] = useState('');
 
   const run = async <T,>(action: () => Promise<T>): Promise<T> => {
+    const token = getAuthToken();
     setError('');
-    try { return await action(); } catch (e) { setError((e as Error).message); throw e; }
+    try { return await action(); } catch (e) { if (token === getAuthToken()) setError((e as Error).message); throw e; }
   };
   const refreshAdmin = async () => {
     const [q, s, m, a] = await Promise.all([
@@ -52,7 +53,16 @@ export default function App() {
       setWorkspace(user.role === 'admin' ? 'admin' : 'student');
       setActiveTab(user.role === 'admin' ? 'bank' : 'submit');
       await (user.role === 'admin' ? refreshAdmin() : refreshStudent());
-    }).catch(() => { setAuthToken(null); setAccount(null); }).finally(() => setLoading(false));
+    }).catch(e => {
+      if (e instanceof ApiError && e.status === 401) { setAuthToken(null); setAccount(null); }
+      else setError((e as Error).message);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    const expired = () => { setAccount(null); setQuestions([]); setSubmissions([]); setMcqs([]); setAttempts([]); setLoading(false); };
+    window.addEventListener('smart-exam-session-expired', expired);
+    return () => window.removeEventListener('smart-exam-session-expired', expired);
   }, []);
 
   const signedIn = async (session: Session) => {
@@ -66,6 +76,7 @@ export default function App() {
   const signOut = () => {
     request('/auth/logout', { method: 'POST' }).catch(() => {});
     setAuthToken(null); setAccount(null); setQuestions([]); setSubmissions([]); setMcqs([]); setAttempts([]);
+    setIsQuestionModalOpen(false); setActiveSubmissionId(''); setSelectedQuestionId('');
     setWorkspace('student'); setActiveTab('submit');
   };
 
@@ -103,7 +114,8 @@ export default function App() {
     setSubmissions(prev => prev.map(s => s.id === id ? updated : s));
   });
   const recordTeacherLabel = (id: string, mark: number) => run(async () => {
-    await request(`/submissions/${id}/teacher-label`, json('PUT', { mark }));
+    const saved = await request<{ teacherMark: number }>(`/submissions/${id}/teacher-label`, json('PUT', { mark }));
+    setSubmissions(prev => prev.map(s => s.id === id ? { ...s, teacherLabel: saved.teacherMark } : s));
   });
   const createMCQ = (item: MCQQuestion) => run(async () => {
     const created = await request<MCQQuestion>('/mcqs', json('POST', item));
@@ -126,7 +138,10 @@ export default function App() {
 
   const question = questions.find(q => q.id === selectedQuestionId) || questions[0];
   const isDark = theme === 'dark';
-  if (!account && !loading) return <LoginView onLogin={session => { signedIn(session).catch(() => {}); }} />;
+  if (!account && !loading) return <>
+    {error && <p role="alert" className="p-4 bg-red-50 text-red-800">{error}</p>}
+    <LoginView onLogin={session => { signedIn(session).catch(() => {}); }} />
+  </>;
   return (
     <div className={`min-h-screen w-full font-sans antialiased p-4 sm:p-6 lg:p-8 flex flex-col items-center relative transition-colors ${isDark ? 'bg-[#0b101c] text-white' : 'bg-[#C9D2DB] text-slate-800'}`}
       style={{ backgroundImage: isDark
@@ -142,8 +157,8 @@ export default function App() {
         {loading ? <div className={`alpine-card ${!isDark ? 'light-theme' : ''} p-8`}>Loading project data…</div> : <>
           {activeTab === 'submit' && account && <StudentSubmitView theme={theme} account={account}
             onSubmitted={() => { (account.role === 'admin' ? refreshAdmin() : refreshStudent()).catch(e => setError((e as Error).message)); }} />}
-          {activeTab === 'bank' && <QuestionBankView questions={questions} theme={theme} onAddQuestion={q => { createQuestion(q).catch(() => {}); }}
-            onUpdateQuestion={q => { updateQuestion(q).catch(() => {}); }} onDeleteQuestion={id => { deleteQuestion(id).catch(() => {}); }}
+          {activeTab === 'bank' && <QuestionBankView questions={questions} theme={theme} onAddQuestion={createQuestion}
+            onUpdateQuestion={updateQuestion} onDeleteQuestion={deleteQuestion}
             onSelectForGrading={q => { setSelectedQuestionId(q.id); setWorkspace('admin'); setActiveTab('grade'); }} />}
           {activeTab === 'grade' && (question ? <GradeAnswerView question={question} submissions={submissions.filter(s => s.questionId === question.id)}
             activeSubmissionId={activeSubmissionId} theme={theme} onSelectSubmission={setActiveSubmissionId}

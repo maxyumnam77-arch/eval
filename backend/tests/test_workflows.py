@@ -1,4 +1,5 @@
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -198,3 +199,132 @@ def test_student_access_ocr_review_history_and_mcq_scan(client, monkeypatch):
     client.headers.update({"Authorization": f"Bearer {second['token']}"})
     assert client.get("/api/student/answers").json() == []
     assert client.get(f"/api/submissions/{sid}/pages/0").status_code == 404
+
+
+@pytest.mark.parametrize("change", [
+    {"title": "   "}, {"referenceAnswer": "\n "}, {"maxMarks": 5.001},
+    {"criteria": [{"title": "Point", "description": "Point", "maxMark": 5.004}]},
+])
+def test_question_rejects_blank_fields_and_rounding_loss(client, change):
+    assert client.post("/api/questions", json={**question_payload(), **change}).status_code == 422
+    assert client.get("/api/questions").json() == []
+
+
+def test_mcq_rejects_invalid_options_and_stale_attempts(client):
+    payload = {"code": "M1", "question": "Which?", "correctKey": "A",
+               "options": [{"key": "A", "text": "First"}, {"key": "B", "text": "Second"}]}
+    for invalid in [[{"key": {}, "text": "Wrong"}],
+                    [{"key": "A", "text": "First"}, {"key": "E", "text": "Wrong"}],
+                    [{"key": "A", "text": None}, {"key": "B", "text": "Second"}]]:
+        assert client.post("/api/mcqs", json={**payload, "options": invalid}).status_code == 422
+    question = client.post("/api/mcqs", json=payload).json()
+    attempt = {"studentName": "Sam", "studentId": "S1", "answers": {question["id"]: "C"}}
+    assert client.post("/api/mcq-attempts", json=attempt).status_code == 422
+    attempt["answers"] = {"deleted-question": "A"}
+    assert client.post("/api/mcq-attempts", json=attempt).status_code == 409
+    attempt["answers"] = {question["id"]: "E"}
+    assert client.post("/api/mcq-attempts", json=attempt).status_code == 422
+    assert client.get("/api/mcq-attempts").json() == []
+
+
+def test_uncertain_scan_and_duplicate_criteria_cannot_earn_credit(monkeypatch):
+    monkeypatch.setattr(grading, "_chat", lambda *_a, **_kw: json.dumps({
+        "answers": {"M1": "B"}, "uncertain": ["M1"]}))
+    answers, uncertain = grading.detect_mcq_choices(b"image", ["M1", "M2"])
+    assert answers == {"M1": "", "M2": ""} and uncertain == ["M1", "M2"]
+    score = {"id": "c1", "mark": 1, "evidence": "Framing"}
+    scores, flags = grading.validate_grade({"criteria": [score, score]},
+        [{"id": "c1", "title": "Framing", "maxMark": 1}], "Framing.")
+    assert scores[0]["mark"] == 0 and flags
+
+
+def test_typed_failure_can_retry_same_saved_attempt(client, monkeypatch):
+    question = create_question(client)
+    student = client.post("/api/auth/register", json={"username": "retry-student", "displayName": "Sam",
+        "password": "student-password"}).json()
+    client.headers.update({"Authorization": f"Bearer {student['token']}"})
+    def offline(*_args, **_kwargs):
+        raise grading.ModelUnavailable("Local model is offline")
+    monkeypatch.setattr(grading, "_chat", offline)
+    pending = client.post("/api/student/answers", data={"question_id": question["id"], "answer_text": "Framing."}).json()
+    assert pending["status"] == "pending" and "offline" in pending["message"]
+    monkeypatch.setattr(grading, "_chat", lambda *_a, **_kw: json.dumps({
+        "criteria": [{"id": "c1", "mark": 1, "evidence": "Framing"}]}))
+    retried = client.post(f"/api/student/answers/{pending['id']}/grade", json={"text": "Framing."})
+    assert retried.json()["status"] == "graded" and retried.json()["id"] == pending["id"]
+    assert len(client.get("/api/student/answers").json()) == 1
+
+
+def test_changed_answer_during_model_call_does_not_save_stale_grade(client, monkeypatch):
+    question = create_question(client)
+    submission = client.post("/api/submissions", data={"question_id": question["id"],
+        "student_name": "Sam", "student_id": "S1", "answer_text": "Framing."}).json()
+    def changed(*_args, **_kwargs):
+        with db.connection() as conn:
+            conn.execute("UPDATE submissions SET ocr_transcript='New answer' WHERE id=?", (submission["id"],))
+        return json.dumps({"criteria": [{"id": "c1", "mark": 1, "evidence": "Framing"}]})
+    monkeypatch.setattr(grading, "_chat", changed)
+    assert client.post(f"/api/submissions/{submission['id']}/grade").status_code == 409
+    with db.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM grades").fetchone()[0] == 0
+
+
+def test_teacher_label_uses_saved_rubric_maximum(client, monkeypatch):
+    question = create_question(client)
+    submission = client.post("/api/submissions", data={"question_id": question["id"],
+        "student_name": "Sam", "student_id": "S1", "answer_text": "Framing."}).json()
+    monkeypatch.setattr(grading, "_chat", lambda *_a, **_kw: json.dumps({
+        "criteria": [{"id": "c1", "mark": 1, "evidence": "Framing"}]}))
+    assert client.post(f"/api/submissions/{submission['id']}/grade").status_code == 200
+    revised = question_payload()
+    revised["maxMarks"] = 10
+    for criterion in revised["criteria"]:
+        criterion["maxMark"] = 2
+    assert client.put(f"/api/questions/{question['id']}", json=revised).status_code == 200
+    assert client.put(f"/api/submissions/{submission['id']}/teacher-label", json={"mark": 6}).status_code == 422
+    assert client.put(f"/api/submissions/{submission['id']}/teacher-label", json={"mark": 5}).status_code == 200
+
+
+def test_logout_revokes_session_and_cors_preflight_works(client):
+    preflight = client.options("/api/questions", headers={"Origin": "http://127.0.0.1:3000",
+        "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization"})
+    assert preflight.status_code == 200
+    assert client.post("/api/auth/logout").status_code == 200
+    assert client.get("/api/auth/me").status_code == 401
+    assert client.get("/api/student/answers").status_code == 401
+
+
+def test_changed_transcript_invalidates_teacher_label(client, monkeypatch):
+    question = create_question(client)
+    submission = client.post("/api/submissions", data={"question_id": question["id"],
+        "student_name": "Sam", "student_id": "S1", "answer_text": "Framing."}).json()
+    monkeypatch.setattr(grading, "_chat", lambda *_a, **_kw: json.dumps({
+        "criteria": [{"id": "c1", "mark": 1, "evidence": "Framing"}]}))
+    assert client.post(f"/api/submissions/{submission['id']}/grade").status_code == 200
+    assert client.put(f"/api/submissions/{submission['id']}/teacher-label", json={"mark": 1}).status_code == 200
+    assert client.get("/api/submissions").json()[0]["teacherLabel"] == 1
+    changed = client.put(f"/api/submissions/{submission['id']}/transcript", json={"text": "Addressing."}).json()
+    assert changed["teacherLabel"] is None and changed["status"] == "pending"
+    assert client.get("/api/evaluation").json()["samples"] == 0
+
+
+def test_dotenv_config_is_loaded_before_model_and_database(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+    source = Path(__file__).parents[1]
+    package = tmp_path / "backend"
+    package.mkdir()
+    for name in ["__init__.py", "db.py", "grading.py"]:
+        shutil.copy(source / name, package / name)
+    (tmp_path / ".env").write_text("EVAL_MODEL=local-test-model\nEVAL_PROVIDER=mlx\nEVAL_DATA_DIR=./records\n")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("EVAL_")}
+    result = subprocess.run([sys.executable, "-c", "from backend import db, grading; print(grading.MODEL, grading.PROVIDER, db.DATA_DIR.name)"],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, check=True)
+    assert result.stdout.strip() == "local-test-model mlx records"
+    env["EVAL_MODEL"] = "exported-model"
+    result = subprocess.run([sys.executable, "-c", "from backend import grading; print(grading.MODEL)"],
+                            cwd=tmp_path, env=env, text=True, capture_output=True, check=True)
+    assert result.stdout.strip() == "exported-model"

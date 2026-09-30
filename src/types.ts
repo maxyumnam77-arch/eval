@@ -56,6 +56,7 @@ export interface StudentSubmission {
   }[];
   teacherOverrideTotal?: number;
   teacherFeedback?: string;
+  teacherLabel?: number | null;
   gradedAt?: string;
 }
 

@@ -30,8 +30,8 @@ def model_status():
         response.raise_for_status()
         data = response.json()
         names = [item.get("name", "") for item in data.get("models", [])] if PROVIDER == "ollama" else [item.get("id", "") for item in data.get("data", [])]
-        return {"ready": MODEL in names or (PROVIDER == "mlx" and bool(names)), "provider": PROVIDER, "model": MODEL, "availableModels": names}
-    except (httpx.HTTPError, ValueError, ModelUnavailable):
+        return {"ready": PROVIDER in {"ollama", "mlx"} and MODEL in names, "provider": PROVIDER, "model": MODEL, "availableModels": names}
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError, ModelUnavailable):
         return {"ready": False, "provider": PROVIDER, "model": MODEL, "availableModels": []}
 
 
@@ -65,7 +65,7 @@ def _chat(system, user, image=None, structured=False):
         data = response.json()
         content = data["message"]["content"] if PROVIDER == "ollama" else data["choices"][0]["message"]["content"]
         return content.strip()
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
+    except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError, AttributeError) as exc:
         raise ModelUnavailable(f"Local model unavailable or returned an invalid response: {exc}") from exc
 
 
@@ -96,7 +96,7 @@ def detect_mcq_choices(image, codes):
     uncertain = set(str(code) for code in uncertain_items) if isinstance(uncertain_items, list) else set()
     for code in codes:
         choice = str(raw["answers"].get(code, "")).strip().upper()
-        if choice not in {"A", "B", "C", "D"}:
+        if code in uncertain or choice not in {"A", "B", "C", "D"}:
             choice = ""
             uncertain.add(code)
         answers[code] = choice
@@ -111,7 +111,10 @@ def _evidence_present(evidence, answer):
 def validate_grade(raw, criteria, answer):
     if not isinstance(raw, dict) or not isinstance(raw.get("criteria"), list):
         raise ValueError("Model did not return criterion scores.")
-    by_id = {str(item.get("id")): item for item in raw["criteria"] if isinstance(item, dict)}
+    ids = [str(item.get("id")) for item in raw["criteria"] if isinstance(item, dict)]
+    duplicate_ids = {cid for cid in ids if ids.count(cid) > 1}
+    by_id = {str(item.get("id")): item for item in raw["criteria"]
+             if isinstance(item, dict) and str(item.get("id")) not in duplicate_ids}
     flags = []
     if len(by_id) != len(raw["criteria"]):
         flags.append("Duplicate or missing criterion IDs in model response")

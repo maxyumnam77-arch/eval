@@ -16,10 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 from . import auth, db, grading
+from . import exams
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def new_id():
@@ -109,6 +110,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Smart Exam Evaluation", version="1.0", lifespan=lifespan)
+app.include_router(exams.router)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
                    allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Authorization"])
 
@@ -259,6 +261,8 @@ def update_question(qid: str, payload: QuestionInput):
 @app.delete("/api/questions/{qid}")
 def delete_question(qid: str):
     with db.connection() as conn:
+        if exams.question_in_exams(conn, "descriptive", qid):
+            raise HTTPException(409, "This question belongs to an exam set. Keep it for exam records.")
         if conn.execute("SELECT 1 FROM submissions WHERE question_id=?", (qid,)).fetchone():
             raise HTTPException(409, "This question has submissions. Keep it for the grade audit.")
         deleted = conn.execute("DELETE FROM questions WHERE id=?", (qid,)).rowcount
@@ -278,6 +282,13 @@ def grade_out(row):
             "teacherOverrides": overrides, "teacherFeedback": row["teacher_feedback"], "gradedAt": row["graded_at"]}
 
 
+def submission_question(conn, row):
+    if row["exam_attempt_id"]:
+        attempt = conn.execute("SELECT snapshot FROM exam_attempts WHERE id=?", (row["exam_attempt_id"],)).fetchone()
+        return exams.descriptive_question(json.loads(attempt["snapshot"]), row["question_id"])
+    return question_out(conn, conn.execute("SELECT * FROM questions WHERE id=?", (row["question_id"],)).fetchone())
+
+
 def submission_out(conn, row):
     grade = conn.execute("SELECT * FROM grades WHERE submission_id=? ORDER BY graded_at DESC, rowid DESC LIMIT 1", (row["id"],)).fetchone()
     pages = conn.execute("SELECT position, file_name FROM submission_pages WHERE submission_id=? ORDER BY position", (row["id"],)).fetchall()
@@ -285,10 +296,13 @@ def submission_out(conn, row):
               "studentId": row["student_id"], "fileName": row["file_name"], "submittedAt": row["submitted_at"],
               "ocrOriginal": row["ocr_original"], "ocrTranscript": row["ocr_transcript"], "ocrEngine": row["ocr_engine"],
               "ocrError": row["ocr_error"], "status": row["status"],
+              "examAttemptId": row["exam_attempt_id"],
               "pages": [{"position": p["position"], "fileName": p["file_name"],
                          "url": f"/api/submissions/{row['id']}/pages/{p['position']}"} for p in pages]}
     if grade and row["status"] == "graded":
         result.update(grade_out(grade))
+    elif row["exam_attempt_id"]:
+        result["rubricSnapshot"] = submission_question(conn, row)
     label = conn.execute("SELECT mark FROM teacher_labels WHERE submission_id=?", (row["id"],)).fetchone()
     result["teacherLabel"] = label["mark"] if label else None
     return result
@@ -375,12 +389,16 @@ def student_response(submission, message=None):
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM questions WHERE id=?", (submission["questionId"],)).fetchone()
         question = question_out(conn, row)
+        if submission.get("examAttemptId"):
+            attempt = conn.execute("SELECT snapshot FROM exam_attempts WHERE id=?", (submission["examAttemptId"],)).fetchone()
+            question = exams.descriptive_question(json.loads(attempt["snapshot"]), submission["questionId"])
     snapshot = submission.get("rubricSnapshot") or question
     result = {"id": submission["id"], "studentName": submission["studentName"],
               "questionId": submission["questionId"], "questionTitle": snapshot["title"],
               "maxMarks": snapshot["maxMarks"], "submittedAt": submission["submittedAt"],
               "transcript": submission["ocrTranscript"], "ocrError": submission["ocrError"],
               "status": submission["status"], "pages": submission["pages"]}
+    result["examAttemptId"] = submission.get("examAttemptId")
     if message:
         result["message"] = message
     if submission["status"] == "graded":
@@ -404,26 +422,31 @@ def assert_student_owns(sid, user):
 
 
 @app.get("/api/student/answers")
-def student_history(request: Request):
+def student_history(request: Request, exam_attempt_id: str | None = None):
     with db.connection() as conn:
-        rows = conn.execute("SELECT * FROM submissions WHERE owner_user_id=? ORDER BY submitted_at DESC, rowid DESC",
-                            (request.state.user["id"],)).fetchall()
+        if exam_attempt_id:
+            exams.owned_attempt(conn, exam_attempt_id, request.state.user)
+        rows = conn.execute("""SELECT * FROM submissions WHERE owner_user_id=?
+            AND (? IS NULL OR exam_attempt_id=?) ORDER BY submitted_at DESC, rowid DESC""",
+                            (request.state.user["id"], exam_attempt_id, exam_attempt_id)).fetchall()
         return [student_response(submission_out(conn, row)) for row in rows]
 
 
 @app.post("/api/student/answers/draft", status_code=201)
 async def student_answer_draft(request: Request, question_id: str = Form(...),
-                               ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None)):
+                               ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None),
+                               exam_attempt_id: str | None = Form(None)):
+    exam_attempt_id = exam_attempt_id or None
     with db.connection() as conn:
-        row = conn.execute("SELECT rubric_approved FROM questions WHERE id=?", (question_id,)).fetchone()
-        if not row or not row["rubric_approved"]:
-            raise HTTPException(409, "This question is not available for automatic grading.")
+        exams.check_answer_context(conn, exam_attempt_id, question_id, request.state.user)
     if not files:
         raise HTTPException(422, "Upload at least one answer image.")
     user = request.state.user
     submission = await add_submission(question_id, user["displayName"], user["username"], "", ocr_mode, files)
     with db.connection() as conn:
-        conn.execute("UPDATE submissions SET owner_user_id=? WHERE id=?", (user["id"], submission["id"]))
+        conn.execute("UPDATE submissions SET owner_user_id=?, exam_attempt_id=? WHERE id=?",
+                     (user["id"], exam_attempt_id, submission["id"]))
+    submission["examAttemptId"] = exam_attempt_id
     return student_response(submission, "Review the extracted text, then confirm to grade.")
 
 
@@ -445,18 +468,20 @@ def grade_student_draft(sid: str, payload: TranscriptInput, request: Request):
 
 @app.post("/api/student/answers", status_code=201)
 async def submit_student_answer(request: Request, question_id: str = Form(...), answer_text: str = Form(""),
-                                ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None)):
+                                ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None),
+                                exam_attempt_id: str | None = Form(None)):
     """Accept a student answer and grade it immediately against an approved rubric."""
+    exam_attempt_id = exam_attempt_id or None
     with db.connection() as conn:
-        row = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
-        if not row or not row["rubric_approved"]:
-            raise HTTPException(409, "This question is not available for automatic grading.")
+        exams.check_answer_context(conn, exam_attempt_id, question_id, request.state.user)
     user = request.state.user
     # A typed correction takes precedence over OCR, while images remain saved as source pages.
     submission = await add_submission(question_id, user["displayName"], user["username"], answer_text,
                                       "manual" if answer_text.strip() else ocr_mode, files)
     with db.connection() as conn:
-        conn.execute("UPDATE submissions SET owner_user_id=? WHERE id=?", (user["id"], submission["id"]))
+        conn.execute("UPDATE submissions SET owner_user_id=?, exam_attempt_id=? WHERE id=?",
+                     (user["id"], exam_attempt_id, submission["id"]))
+    submission["examAttemptId"] = exam_attempt_id
     if not submission["ocrTranscript"].strip():
         return student_response(submission, "OCR could not read the answer. Type the answer below and confirm to grade this saved attempt.")
     try:
@@ -498,8 +523,7 @@ def grade_submission(sid: str):
         submission = conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone()
         if not submission:
             raise HTTPException(404, "Submission not found.")
-        row = conn.execute("SELECT * FROM questions WHERE id=?", (submission["question_id"],)).fetchone()
-        question = question_out(conn, row)
+        question = submission_question(conn, submission)
         if not question["rubricApproved"]:
             raise HTTPException(409, "Teacher must approve the rubric before grading.")
         answer = submission["ocr_transcript"].strip()
@@ -516,7 +540,7 @@ def grade_submission(sid: str):
         current = conn.execute("SELECT ocr_transcript, status FROM submissions WHERE id=?", (sid,)).fetchone()
         current_question = conn.execute("SELECT rubric_version FROM questions WHERE id=?", (question["id"],)).fetchone()
         if (current["ocr_transcript"].strip() != answer or current["status"] != submission["status"]
-                or current_question["rubric_version"] != question["rubricVersion"]):
+                or (not submission["exam_attempt_id"] and current_question["rubric_version"] != question["rubricVersion"])):
             raise HTTPException(409, "The answer or rubric changed during grading. Refresh and try again.")
         gid, timestamp = new_id(), now()
         conn.execute("INSERT INTO grades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
@@ -628,6 +652,8 @@ def update_mcq(mid: str, payload: MCQInput):
 @app.delete("/api/mcqs/{mid}")
 def delete_mcq(mid: str):
     with db.connection() as conn:
+        if exams.question_in_exams(conn, "mcq", mid):
+            raise HTTPException(409, "This MCQ belongs to an exam set. Keep it for exam records.")
         if not conn.execute("DELETE FROM mcqs WHERE id=?", (mid,)).rowcount:
             raise HTTPException(404, "MCQ not found.")
     return {"deleted": True}
@@ -649,6 +675,7 @@ def grade_mcq_attempt(payload: AttemptInput):
         for q in questions:
             answer = payload.answers.get(q["id"], "")
             results.append({"questionId": q["id"], "studentAnswer": answer,
+                            "code": q["code"], "subject": q["subject"], "question": q["question"],
                             "correctKey": q["correct_key"], "awarded": 1 if answer == q["correct_key"] else 0})
         aid, score, timestamp = new_id(), sum(item["awarded"] for item in results), now()
         conn.execute("""INSERT INTO mcq_attempts (id, student_name, student_id, answers, results,
@@ -691,11 +718,11 @@ def list_mcq_attempts():
 @app.put("/api/submissions/{sid}/teacher-label")
 def record_teacher_label(sid: str, payload: TeacherLabelInput):
     with db.connection() as conn:
-        row = conn.execute("SELECT q.max_marks, s.status FROM submissions s JOIN questions q ON q.id=s.question_id WHERE s.id=?", (sid,)).fetchone()
+        row = conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone()
         if not row:
             raise HTTPException(404, "Submission not found.")
         saved_grade = conn.execute("SELECT rubric_snapshot FROM grades WHERE submission_id=? ORDER BY graded_at DESC, rowid DESC LIMIT 1", (sid,)).fetchone()
-        maximum = json.loads(saved_grade["rubric_snapshot"])["maxMarks"] if saved_grade and row["status"] == "graded" else row["max_marks"]
+        maximum = json.loads(saved_grade["rubric_snapshot"])["maxMarks"] if saved_grade and row["status"] == "graded" else submission_question(conn, row)["maxMarks"]
         if payload.mark > maximum:
             raise HTTPException(422, "Teacher mark exceeds the question maximum.")
         conn.execute("INSERT INTO teacher_labels VALUES (?,?,?) ON CONFLICT(submission_id) DO UPDATE SET mark=excluded.mark, recorded_at=excluded.recorded_at",

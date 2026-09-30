@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DescriptiveQuestion, StudentSubmission } from '../types';
+import { downloadCsv, printReport } from '../reports';
 
 type Props = {
   questions: DescriptiveQuestion[]; submissions: StudentSubmission[]; theme: 'light' | 'dark';
@@ -31,10 +32,19 @@ export const ResultsReviewView = ({ questions, submissions, theme, onTeacherOver
   const shown = submissions.filter(s =>
     (status === 'all' || s.status === status) &&
     (s.studentName.toLowerCase().includes(search.toLowerCase()) || s.studentId.toLowerCase().includes(search.toLowerCase())));
+  const columns = ['Student', 'ID', 'Question', 'Status', 'Final score', 'Maximum', 'Model score', 'Teacher mark', 'Feedback'];
+  const reportRows = shown.map(s => {
+    const q = s.rubricSnapshot || questions.find(q => q.id === s.questionId);
+    return [s.studentName, s.studentId, q?.title, s.status, s.evaluatedTotalScore, q?.maxMarks, s.modelTotal, s.teacherLabel, s.teacherFeedback];
+  });
   return <div className="space-y-5">
     <header className={`${card} p-5`}>
       <h2 className="font-bold text-lg">Results & Review</h2>
       <p className="text-xs opacity-70">{submissions.filter(s => s.status === 'graded').length} graded / {submissions.length} submitted · Teacher corrections are saved.</p>
+      <div className="flex flex-wrap gap-2 mt-3 text-xs">
+        <button disabled={!shown.length} className="rounded-lg border px-3 py-2 disabled:opacity-50" onClick={() => downloadCsv('student-results.csv', columns, reportRows)}>Download results CSV</button>
+        <button disabled={!shown.length} className="rounded-lg border px-3 py-2 disabled:opacity-50" onClick={() => printReport('Student results', [`${shown.length} matching submissions`], columns, reportRows)}>Print / Save PDF</button>
+      </div>
     </header>
     <div className="grid lg:grid-cols-3 gap-5">
       <aside className={`${card} p-5 space-y-3`}>

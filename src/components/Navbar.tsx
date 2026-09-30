@@ -32,12 +32,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   const studentTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
     { id: 'submit', label: 'Submit Answer' },
     { id: 'mcq', label: 'Answer MCQs' },
+    { id: 'exams', label: 'My Exams' },
+    { id: 'progress', label: 'My Progress' },
   ];
   const adminTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
     { id: 'bank', label: 'Question Bank' },
     { id: 'grade', label: 'Manual Grading' },
     { id: 'results', label: 'Results & Review', badge: `${gradedCount}/${totalSubmissions}` },
     { id: 'mcq', label: 'MCQ Answer Keys' },
+    { id: 'exams', label: 'Exam Sets' },
     { id: 'model', label: 'Model & Evaluation' },
   ];
   const tabs = workspace === 'student' ? studentTabs : adminTabs;
@@ -130,6 +133,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           return (
             <button
               key={tab.id}
+              aria-label={tab.label}
+              aria-pressed={isActive}
               onClick={() => onTabChange(tab.id)}
               className={`px-3.5 py-1.5 text-xs rounded-full whitespace-nowrap transition-all duration-200 flex items-center gap-1.5 cursor-pointer ${
                 isActive

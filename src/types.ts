@@ -33,6 +33,7 @@ export interface StudentSubmission {
   fileName: string;
   submittedAt: string;
   questionId: string;
+  examAttemptId?: string | null;
   handwrittenAnswerLines?: string[];
   ocrTranscript: string;
   ocrOriginal?: string;
@@ -84,7 +85,18 @@ export interface MCQStudentAttempt {
   submittedAt: string;
   score?: number;
   maxMarks?: number;
-  results?: { questionId: string; studentAnswer: string; correctKey: string; awarded: number }[];
+  results?: { questionId: string; code?: string; subject?: string; question?: string; studentAnswer: string; correctKey: string; awarded: number }[];
 }
 
-export type ActiveNavTab = 'submit' | 'grade' | 'bank' | 'mcq' | 'results' | 'model';
+export type StudentQuestion = Pick<DescriptiveQuestion, 'id' | 'code' | 'title' | 'prompt' | 'subject' | 'maxMarks'>;
+export type ExamItem = { kind: 'descriptive'; question: StudentQuestion } | { kind: 'mcq'; question: Omit<MCQQuestion, 'correctKey' | 'explanation'> };
+export type ExamDefinition = { id: string; title: string; description: string; published: boolean; version: number; maxMarks: number; items: ExamItem[] };
+export type ExamAttempt = {
+  id: string; examId: string; title: string; description: string; version: number;
+  studentName: string; studentId: string; startedAt: string; status: 'in_progress' | 'completed';
+  score: number | null; earnedMarks: number; maxMarks: number; completedQuestions: number; totalQuestions: number;
+  items: (ExamItem & { status: 'missing' | 'pending' | 'graded'; score: number | null; maxMarks: number;
+    submissionId?: string; studentAnswer?: string; correctKey?: string })[];
+};
+
+export type ActiveNavTab = 'submit' | 'grade' | 'bank' | 'mcq' | 'results' | 'model' | 'exams' | 'progress';

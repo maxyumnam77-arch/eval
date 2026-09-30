@@ -35,22 +35,31 @@ def features(rows, vectorizer):
     return result
 
 
-def run():
+def load_labelled_answers():
     db.initialize()
     with db.connection() as conn:
         rows = [dict(row) for row in conn.execute("""
-            SELECT s.question_id, s.ocr_transcript, q.reference_answer, q.max_marks, l.mark, g.rubric_snapshot
+            SELECT s.question_id, s.ocr_transcript, q.reference_answer, q.max_marks, l.mark, g.rubric_snapshot, e.snapshot AS exam_snapshot
             FROM teacher_labels l
             JOIN submissions s ON s.id=l.submission_id
             JOIN questions q ON q.id=s.question_id
+            LEFT JOIN exam_attempts e ON e.id=s.exam_attempt_id
             LEFT JOIN grades g ON s.status='graded' AND g.id=(SELECT id FROM grades WHERE submission_id=s.id ORDER BY graded_at DESC, rowid DESC LIMIT 1)
             WHERE LENGTH(TRIM(s.ocr_transcript)) > 0
         """)]
     for row in rows:
-        if row["rubric_snapshot"]:
-            snapshot = json.loads(row["rubric_snapshot"])
+        snapshot = json.loads(row["rubric_snapshot"]) if row["rubric_snapshot"] else None
+        if not snapshot and row["exam_snapshot"]:
+            from .exams import descriptive_question
+            snapshot = descriptive_question(json.loads(row["exam_snapshot"]), row["question_id"])
+        if snapshot:
             row["reference_answer"] = snapshot["referenceAnswer"]
             row["max_marks"] = snapshot["maxMarks"]
+    return rows
+
+
+def run():
+    rows = load_labelled_answers()
     groups = [row["question_id"] for row in rows]
     if len(rows) < 30 or len(set(groups)) < 3:
         raise SystemExit("Need at least 30 teacher-marked answers across 3 questions; found "

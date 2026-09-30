@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { MCQQuestion, MCQStudentAttempt } from '../types';
 import { request } from '../api';
+import { downloadCsv, printReport } from '../reports';
+import { WorkPhase, WorkProgress } from './WorkProgress';
 
 type Props = {
   mcqs: MCQQuestion[]; studentAttempts: MCQStudentAttempt[]; theme: 'light' | 'dark'; workspace: 'grading' | 'admin';
@@ -24,6 +26,8 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
   const [studentId, setStudentId] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<WorkPhase>('idle');
+  const [scanned, setScanned] = useState(false);
   const [scanFile, setScanFile] = useState<File | null>(null);
   const [scanError, setScanError] = useState('');
   const [uncertainCodes, setUncertainCodes] = useState<string[]>([]);
@@ -38,21 +42,23 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
     } catch { /* App displays the error. */ } finally { setBusy(false); }
   };
   const submitAttempt = async (event: React.FormEvent) => {
-    event.preventDefault(); setBusy(true);
+    event.preventDefault(); setBusy(true); setPhase('grading');
     try {
       setLatestAttempt(await onCreateAttempt(studentIdentity?.name || name, studentIdentity?.id || studentId, answers));
       setName(''); setStudentId(''); setAnswers({});
-    } catch { /* App displays the error. */ } finally { setBusy(false); }
+      setPhase('ready');
+    } catch { setPhase(scanned ? 'review' : 'idle'); /* App displays the error. */ } finally { setBusy(false); }
   };
   const readSheet = async () => {
     if (!scanFile) return;
-    setBusy(true); setScanError('');
+    setBusy(true); setScanError(''); setScanned(true); setPhase('reading');
     const form = new FormData(); form.append('file', scanFile);
     try {
       const detected = await request<{ answers: Record<string, string>; uncertainCodes: string[] }>('/student/mcqs/scan',
         { method: 'POST', body: form });
       setAnswers(detected.answers); setUncertainCodes(detected.uncertainCodes);
-    } catch (e) { setScanError((e as Error).message); }
+      setPhase('review');
+    } catch (e) { setScanError((e as Error).message); setPhase('idle'); }
     finally { setBusy(false); }
   };
   return <div className="space-y-5">
@@ -73,15 +79,15 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
         </div>}
         {workspace !== 'admin' && <div className="rounded-xl border border-slate-400/30 p-3 space-y-2">
           <label className="block text-sm font-semibold">Optional scanned MCQ sheet
-            <input className={`${input} mt-1`} type="file" accept="image/png,image/jpeg,image/webp"
-              onChange={e => setScanFile(e.target.files?.[0] || null)} /></label>
+            <input disabled={busy} className={`${input} mt-1`} type="file" accept="image/png,image/jpeg,image/webp"
+              onChange={e => { setScanFile(e.target.files?.[0] || null); setPhase('idle'); setUncertainCodes([]); setScanError(''); }} /></label>
           <p className="text-xs opacity-70">Write each question code beside A/B/C/D choices and mark one option. Qwen reads visible marks; check every detected choice below before scoring.</p>
           <button type="button" disabled={busy || !scanFile} onClick={readSheet}
-            className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white disabled:opacity-50">{busy ? 'Reading marks…' : 'Detect marked choices'}</button>
+            className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white disabled:opacity-50">{busy && phase === 'reading' ? 'Reading marks…' : 'Detect marked choices'}</button>
           {scanError && <p role="alert" className="text-xs text-red-600">{scanError}</p>}
           {!!uncertainCodes.length && <p className="text-xs text-amber-600">Unclear or blank: {uncertainCodes.join(', ')}. Select the correct marked choice yourself before scoring.</p>}
         </div>}
-        {mcqs.map((q, i) => <fieldset className={`alpine-subcard ${dark ? '' : 'light-theme'} p-4 rounded-xl`} key={q.id}>
+        {mcqs.map((q, i) => <fieldset disabled={busy} className={`alpine-subcard ${dark ? '' : 'light-theme'} p-4 rounded-xl`} key={q.id}>
           <legend className="font-semibold text-sm">{q.code} · Question {i + 1} · 1 mark</legend><p className="text-sm mb-2">{q.question}</p>
           {q.options.map(option => <label key={option.key} className="flex items-center gap-2 py-1 text-sm">
             <input type="radio" name={q.id} checked={answers[q.id] === option.key}
@@ -91,7 +97,8 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
           <button type="button" className="text-xs underline mt-1" onClick={() => setAnswers(prev => ({ ...prev, [q.id]: '' }))}>Clear answer</button>
         </fieldset>)}
         <button disabled={busy || !mcqs.length} className="alpine-btn-blue px-5 py-2.5 text-sm text-white font-bold disabled:opacity-50">
-          {busy ? 'Scoring…' : 'Score attempt'}</button>
+          {busy && phase === 'grading' ? 'Scoring…' : 'Score attempt'}</button>
+        <WorkProgress phase={phase} busy={busy} scanned={scanned} mode="mcq" />
       </form>
       <div className={`${card} p-5 space-y-3`}>
         <h3 className="font-bold">{workspace === 'admin' ? `Saved attempts (${studentAttempts.length})` : `Your attempts (${studentAttempts.length})`}</h3>
@@ -101,6 +108,15 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
         </button>)}
         {active && <div className="border-t border-slate-400/30 pt-3">
           <h4 className="font-bold">Result: {active.score}/{active.maxMarks}</h4>
+          <div className="flex flex-wrap gap-2 my-2 text-xs">
+            <button type="button" className="rounded-lg border px-2 py-1" onClick={() => downloadCsv('mcq-result.csv',
+              ['Student', 'ID', 'Submitted', 'Total', 'Maximum', 'Question', 'Answer', 'Key', 'Mark'],
+              (active.results || []).map(r => [active.studentName, active.studentId, active.submittedAt, active.score, active.maxMarks,
+                r.code || r.questionId, r.studentAnswer || 'Blank', r.correctKey, r.awarded]))}>Download CSV</button>
+            <button type="button" className="rounded-lg border px-2 py-1" onClick={() => printReport('MCQ result',
+              [`${active.studentName} (${active.studentId}) · ${active.score}/${active.maxMarks}`], ['Question', 'Answer', 'Key', 'Mark'],
+              (active.results || []).map(r => [r.code || r.questionId, r.studentAnswer || 'Blank', r.correctKey, r.awarded]))}>Print / Save PDF</button>
+          </div>
           {active.results?.map((r, i) => <p key={r.questionId} className="text-xs py-1">
             Q{i + 1}: {r.studentAnswer || 'Blank'} · key {r.correctKey} · {r.awarded}/1</p>)}
         </div>}

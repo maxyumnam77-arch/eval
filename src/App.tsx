@@ -10,6 +10,8 @@ import { ModelEvaluationView } from './components/ModelEvaluationView';
 import { QuestionSelectModal } from './components/QuestionSelectModal';
 import { StudentSubmitView } from './components/StudentSubmitView';
 import { Account, LoginView, Session } from './components/LoginView';
+import { ExamView } from './components/ExamView';
+import { PerformanceView } from './components/PerformanceView';
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
@@ -172,6 +174,8 @@ export default function App() {
             onTeacherOverrideCriterion={overrideMark} onGradeSingleSubmission={gradeSubmission} onSaveFeedback={saveFeedback}
             onRecordTeacherLabel={recordTeacherLabel} />}
           {activeTab === 'model' && <ModelEvaluationView theme={theme} />}
+          {activeTab === 'exams' && account && <ExamView key={workspace} theme={theme} workspace={workspace} account={account} questions={questions} mcqs={mcqs} />}
+          {activeTab === 'progress' && account && <PerformanceView theme={theme} account={account} />}
         </>}
       </main>
       {question && <QuestionSelectModal questions={questions} selectedQuestionId={selectedQuestionId} isOpen={isQuestionModalOpen}

@@ -1,6 +1,6 @@
 # Smart Exam Evaluation
 
-Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. The React UI has **Student** and **Admin** workspaces. Students submit typed or scanned answers and receive an automatic grade; the instructor prepares questions and approved rubrics beforehand. FastAPI saves questions, rubric versions, answer images, OCR text, marks, evidence, teacher corrections, and MCQ attempts in SQLite.
+Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. The React UI has **Student** and **Admin** workspaces. Students submit typed or scanned answers and receive an automatic grade; the instructor prepares questions and approved rubrics beforehand. FastAPI saves questions, rubric versions, answer images, OCR text, marks, evidence, teacher corrections, MCQ attempts, and combined exam attempts in SQLite.
 
 ## Run on the Mac
 
@@ -41,6 +41,12 @@ If automatic grading fails, the answer stays in the student's history as **Pendi
 3. Sign out of Admin and register a student account. In **Student → Submit Answer**, choose the question. Typed answers grade immediately. For uploaded images, inspect and correct the OCR text, then confirm; the student sees the score, evidence, feedback, and their saved attempt history. No instructor action is required per answer.
 4. In **Admin → MCQ Answer Keys**, create or edit MCQs. In **Student → Answer MCQs**, select options or upload a scan with printed question codes and A/B/C/D marks. Qwen proposes the marked choices; the student verifies them before deterministic key scoring (1 for correct, 0 for wrong or blank). Scanned-choice detection is experimental until tested on real sheets.
 5. In **Admin → Results & Review**, inspect each criterion's evidence, save optional teacher corrections and feedback, and record independent teacher marks for evaluation. **Manual Grading** remains available for exceptional cases.
+6. In **Admin → Exam Sets**, select up to 30 descriptive questions and MCQs, add instructions, and publish the set. Every descriptive rubric must be approved to publish. Students open **My Exams**, start an attempt, and answer the frozen questions. Descriptive answers support the same OCR review and retry workflow. Exam MCQs use on-screen option selection and are scored together once. A combined final score appears when every question has a grade; blank MCQs receive zero. The latest descriptive submission in that attempt counts, so a pending replacement pauses the final score until it is graded.
+7. In **Student → My Progress**, view subject percentages, recent descriptive results, and rubric points to practice. Subject scores use the latest graded result for each question, including teacher corrections and exam MCQs. These percentages measure earned marks, not model accuracy. No result from another account is included.
+
+Use **Download CSV** on individual answers, MCQs, exam results, progress summaries, or answer history. Admins can export the filtered Results & Review list and all exam attempts. **Print / Save PDF** opens a printable report; choose Save as PDF in the browser's print dialog. Actual stages and elapsed time show while scanned answers or MCQ sheets are read and graded.
+
+Each exam attempt freezes its exam title, instructions, question prompts, MCQ keys, and descriptive rubric versions when it starts. Editing or unpublishing a set affects future attempts; existing students can finish their saved attempts. Questions used by exam records cannot be deleted. Exams with attempts can be unpublished but cannot be deleted. Existing databases are upgraded automatically without replacing prior records.
 
 Data stays in `data/evaluation.sqlite3`; images are in `data/uploads/`. The `data/` directory and local environment files are excluded from Git. Back up that directory if you need to preserve records.
 
@@ -53,7 +59,9 @@ Data stays in `data/evaluation.sqlite3`; images are in `data/uploads/`. The `dat
 | Descriptive grading | Pretrained local Qwen3.5-4B transformer receives question, teacher reference, approved criteria and maximum marks |
 | Verification | Code checks that each positive criterion has a quote present in the student text, rejects invalid marks, and sums criterion awards within the teacher's maximum |
 | MCQ | Deterministic answer-key comparison, 1 or 0; optional Qwen vision reads marked options from a scan before student confirmation |
-| Storage | SQLite question/rubric tables, submission pages, versioned grade snapshots, MCQ attempts, teacher labels |
+| Exams | Published mixed question sets, account-owned immutable attempt snapshots, combined scores only after all questions are graded |
+| Storage | SQLite question/rubric tables, submission pages, versioned grade snapshots, MCQ and exam attempts, teacher labels |
+| Reports | CSV downloads and browser print / Save PDF reports; progress summaries derived from saved results |
 | Evaluation | Teacher labels versus unadjusted model marks: sample count, MAE, within-one-mark rate, Pearson correlation when defined |
 
 **Five-mark example:** five teacher-approved criteria worth one mark each can earn 5/5 when all five are supported. Five arbitrary bullet points are not automatically worth five marks. Rubric versions and the reviewed answer are copied into each grade so later edits do not rewrite old evidence.
@@ -80,7 +88,7 @@ The script takes teacher labels from the local SQLite database, extracts token o
 - Student and admin accounts use hashed local passwords, expiring sessions, and role checks. Student answer pages and history are tied to the account that submitted them. This is still a **local academic tool**: do not expose the API to the public internet or commit real student records without a production security review.
 - The MCQ scan reader needs a clear paper layout and real-image validation. Ambiguous marks are left blank for student confirmation; it never decides the academically correct choice.
 
-Checks: `npm run lint`, `npm run build`, `npm run test:api`, and `.venv/bin/python -m pytest backend/tests -q`.
+Checks: `npm run lint`, `npm run build`, `npm run test:api`, `npm run test:reports`, and `.venv/bin/python -m pytest backend/tests -q`.
 Install test tooling with `.venv/bin/python -m pip install -r backend/requirements-dev.txt`.
 
-Before submission, run through these on the Mac with the actual model: create and approve a question; register a student; submit a typed answer; upload and correct a photographed answer; retry a pending attempt after stopping/restarting the model; score typed and scanned MCQs; sign in as Admin to view original pages and review results. Compare varied answers against independent teacher marks before reporting grading accuracy.
+Before submission, run through these on the Mac with the actual model: create and approve a question; register a student; submit a typed answer; upload and correct a photographed answer; retry a pending attempt after stopping/restarting the model; score typed and scanned MCQs; publish a mixed exam and finish its combined attempt; check My Progress; download a CSV and save a PDF; sign in as Admin to view original pages and review results. Compare varied answers against independent teacher marks before reporting grading accuracy.

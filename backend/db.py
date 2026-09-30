@@ -67,11 +67,29 @@ def initialize():
                 token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 expires_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS exams (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+                published INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1,
+                items TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS exam_attempts (
+                id TEXT PRIMARY KEY, exam_id TEXT NOT NULL REFERENCES exams(id),
+                owner_user_id TEXT NOT NULL REFERENCES users(id), snapshot TEXT NOT NULL,
+                mcq_result TEXT, started_at TEXT NOT NULL
+            );
         """)
         # Existing local databases receive owner columns without changing historical records.
         for table in ("submissions", "mcq_attempts"):
             if "owner_user_id" not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
                 db.execute(f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT")
+        if "exam_attempt_id" not in {row["name"] for row in db.execute("PRAGMA table_info(submissions)")}:
+            db.execute("ALTER TABLE submissions ADD COLUMN exam_attempt_id TEXT REFERENCES exam_attempts(id)")
+        db.executescript("""
+            CREATE INDEX IF NOT EXISTS submissions_owner ON submissions(owner_user_id);
+            CREATE INDEX IF NOT EXISTS submissions_exam_question ON submissions(exam_attempt_id, question_id);
+            CREATE INDEX IF NOT EXISTS exam_attempts_owner ON exam_attempts(owner_user_id);
+            CREATE INDEX IF NOT EXISTS mcq_attempts_owner ON mcq_attempts(owner_user_id);
+        """)
 
 
 @contextmanager

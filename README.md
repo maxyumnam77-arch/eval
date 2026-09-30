@@ -1,6 +1,6 @@
 # Smart Exam Evaluation
 
-Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. The React UI has **Grading** and **Admin** workspaces. FastAPI saves questions, approved rubric versions, answer images, corrected OCR text, marks, evidence, teacher corrections, and MCQ attempts in SQLite.
+Local exam grading assistant for teacher-defined descriptive rubrics and MCQs. The React UI has **Student** and **Admin** workspaces. Students submit typed or scanned answers and receive an automatic grade; the instructor prepares questions and approved rubrics beforehand. FastAPI saves questions, rubric versions, answer images, OCR text, marks, evidence, teacher corrections, and MCQ attempts in SQLite.
 
 ## Run on the Mac
 
@@ -32,10 +32,10 @@ Open **http://127.0.0.1:3000**. Check **http://127.0.0.1:8000/api/health** if th
 ## Use the app
 
 1. In **Admin → Question Bank**, add a question, maximum marks (quick buttons 1–10 or a positive custom amount), and a teacher reference answer.
-2. Configure specific rubric criteria and their marks. Their sum must equal the maximum. Approve the rubric before grading.
-3. In **Grading → Grade Answer**, select the question, enter a student name/ID, then type an answer or upload images. Review and save the text. Press **Grade answer**.
-4. In **Admin → MCQ Answer Keys**, create or edit MCQs. In **Grading → Grade MCQs**, enter a student's choices. Exact key match earns 1; wrong or blank earns 0.
-5. In **Results & Review**, inspect each criterion's evidence, save teacher corrections and feedback, and record an independently assigned teacher mark for evaluation.
+2. Configure specific rubric criteria and their marks. Their sum must equal the maximum. Approve the rubric before students can select the question.
+3. In **Student → Submit Answer**, choose the question, enter a name/ID, then type an answer or upload answer pages. Submission starts OCR (if needed) and Qwen grading automatically. The student sees the score, evidence, feedback, and extracted text. If OCR fails, the student can type the answer and resubmit. No instructor action is required for each answer.
+4. In **Admin → MCQ Answer Keys**, create or edit MCQs. In **Student → Answer MCQs**, enter choices and submit for exact key scoring (1 for correct, 0 for wrong or blank).
+5. In **Admin → Results & Review**, inspect each criterion's evidence, save optional teacher corrections and feedback, and record independent teacher marks for evaluation. **Manual Grading** remains available for exceptional cases.
 
 Data stays in `data/evaluation.sqlite3`; images are in `data/uploads/`. The `data/` directory and local environment files are excluded from Git. Back up that directory if you need to preserve records.
 
@@ -73,5 +73,6 @@ The script takes teacher labels from the local SQLite database, extracts token o
 - OCR can misread handwriting. The teacher must verify the transcript.
 - A 4B model's results require testing against a held-out, teacher-marked set before claiming accuracy. The UI reports no metrics until labels are entered.
 - This is a **local academic tool**, without login/role security. Do not expose the API to the public internet or commit real student records.
+- The Student/Admin switch is a demo workflow separation, not access control. For real deployment, add authentication, hide answer keys and other students' records from student accounts, and protect student result lookup.
 
 Checks: `npm run lint`, `npm run build`, and `.venv/bin/python -m pytest backend/tests -q`.

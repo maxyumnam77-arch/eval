@@ -5,7 +5,7 @@ type Props = {
   mcqs: MCQQuestion[]; studentAttempts: MCQStudentAttempt[]; theme: 'light' | 'dark'; workspace: 'grading' | 'admin';
   onAddMCQ: (item: MCQQuestion) => Promise<void>; onUpdateMCQ: (item: MCQQuestion) => Promise<void>;
   onDeleteMCQ: (id: string) => Promise<void>;
-  onCreateAttempt: (name: string, id: string, answers: Record<string, string>) => Promise<void>;
+  onCreateAttempt: (name: string, id: string, answers: Record<string, string>) => Promise<MCQStudentAttempt>;
 };
 const empty = { code: '', subject: 'General', question: '', options: [
   { key: 'A' as const, text: '' }, { key: 'B' as const, text: '' },
@@ -23,7 +23,10 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [selectedAttempt, setSelectedAttempt] = useState('');
-  const active = studentAttempts.find(a => a.id === selectedAttempt) || studentAttempts[0];
+  const [latestAttempt, setLatestAttempt] = useState<MCQStudentAttempt | null>(null);
+  const active = workspace === 'admin'
+    ? studentAttempts.find(a => a.id === selectedAttempt) || studentAttempts[0]
+    : latestAttempt;
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true);
     try {
@@ -34,7 +37,7 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
   const submitAttempt = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true);
     try {
-      await onCreateAttempt(name, studentId, answers);
+      setLatestAttempt(await onCreateAttempt(name, studentId, answers));
       setName(''); setStudentId(''); setAnswers({});
     } catch { /* App displays the error. */ } finally { setBusy(false); }
   };
@@ -43,7 +46,7 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
       <div><h2 className="font-bold text-lg">MCQ evaluation</h2><p className="text-xs opacity-70">Exact answer-key comparison: correct 1, wrong or blank 0.</p></div>
       <div className="flex gap-2 text-xs font-bold">
         <button className={`px-3 py-2 rounded-lg ${tab === 'grade' ? 'bg-blue-600 text-white' : 'border border-slate-400/40'}`} onClick={() => setTab('grade')}>Grade MCQs</button>
-        <button className={`px-3 py-2 rounded-lg ${tab === 'manage' ? 'bg-blue-600 text-white' : 'border border-slate-400/40'}`} onClick={() => setTab('manage')}>Manage answer keys</button>
+        {workspace === 'admin' && <button className={`px-3 py-2 rounded-lg ${tab === 'manage' ? 'bg-blue-600 text-white' : 'border border-slate-400/40'}`} onClick={() => setTab('manage')}>Manage answer keys</button>}
       </div>
     </div>
     {tab === 'grade' ? <div className="grid lg:grid-cols-3 gap-5">
@@ -67,8 +70,8 @@ export const MCQView = ({ mcqs, studentAttempts, theme, workspace, onAddMCQ, onU
           {busy ? 'Scoring…' : 'Score attempt'}</button>
       </form>
       <div className={`${card} p-5 space-y-3`}>
-        <h3 className="font-bold">Saved attempts ({studentAttempts.length})</h3>
-        {studentAttempts.map(a => <button key={a.id} onClick={() => setSelectedAttempt(a.id)}
+        <h3 className="font-bold">{workspace === 'admin' ? `Saved attempts (${studentAttempts.length})` : 'Your result'}</h3>
+        {workspace === 'admin' && studentAttempts.map(a => <button key={a.id} onClick={() => setSelectedAttempt(a.id)}
           className={`block w-full text-left p-3 rounded-xl border text-sm ${active?.id === a.id ? 'border-blue-500 bg-blue-500/10' : 'border-slate-400/20'}`}>
           <strong>{a.studentName}</strong><span className="block opacity-70">{a.studentId} · {a.score}/{a.maxMarks}</span>
         </button>)}

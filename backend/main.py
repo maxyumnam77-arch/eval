@@ -135,6 +135,15 @@ def list_questions():
         return [question_out(conn, row) for row in conn.execute("SELECT * FROM questions ORDER BY created_at DESC")]
 
 
+@app.get("/api/student/questions")
+def student_questions():
+    with db.connection() as conn:
+        rows = conn.execute("SELECT id, code, title, prompt, subject, max_marks FROM questions WHERE rubric_approved=1 ORDER BY created_at DESC")
+        return [{"id": row["id"], "code": row["code"], "title": row["title"],
+                 "prompt": row["prompt"], "subject": row["subject"], "maxMarks": row["max_marks"]}
+                for row in rows]
+
+
 @app.post("/api/questions", status_code=201)
 def add_question(payload: QuestionInput):
     maximum = validate_question(payload)
@@ -280,6 +289,40 @@ async def add_submission(question_id: str = Form(...), student_name: str = Form(
         for position, (filename, _) in enumerate(images):
             conn.execute("INSERT INTO submission_pages VALUES (?,?,?,?,?)", (new_id(), sid, position, filename, f"{sid}/{position}.png"))
         return submission_out(conn, conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone())
+
+
+@app.post("/api/student/answers", status_code=201)
+async def submit_student_answer(question_id: str = Form(...), student_name: str = Form(...),
+                                student_id: str = Form(...), answer_text: str = Form(""),
+                                ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None)):
+    """Accept a student answer and grade it immediately against an approved rubric."""
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
+        if not row or not row["rubric_approved"]:
+            raise HTTPException(409, "This question is not available for automatic grading.")
+        question = question_out(conn, row)
+    # A typed correction takes precedence over OCR, while images remain saved as source pages.
+    submission = await add_submission(question_id, student_name, student_id, answer_text,
+                                      "manual" if answer_text.strip() else ocr_mode, files)
+    result = {"id": submission["id"], "studentName": submission["studentName"],
+              "questionId": question_id, "maxMarks": question["maxMarks"],
+              "transcript": submission["ocrTranscript"], "ocrError": submission["ocrError"]}
+    if not submission["ocrTranscript"].strip():
+        return {**result, "status": "needs_transcript", "message": "OCR could not read the answer. Type the answer and submit again."}
+    try:
+        graded = grade_submission(submission["id"])
+    except HTTPException as exc:
+        if exc.status_code not in (422, 503):
+            raise
+        return {**result, "status": "pending", "message": str(exc.detail)}
+    return {**result, "status": "graded", "score": graded["evaluatedTotalScore"],
+            "feedback": graded["teacherFeedback"], "reviewFlags": graded["reviewFlags"],
+            "criteria": [{"title": criterion["title"], "maxMark": criterion["maxMark"],
+                          "mark": next((score["mark"] for score in graded["criteriaScores"]
+                                        if score["criterionId"] == criterion["id"]), 0),
+                          "evidence": next((score["evidence"] for score in graded["criteriaScores"]
+                                            if score["criterionId"] == criterion["id"]), "")}
+                         for criterion in question["criteria"]]}
 
 
 @app.get("/api/submissions/{sid}/pages/{position}")

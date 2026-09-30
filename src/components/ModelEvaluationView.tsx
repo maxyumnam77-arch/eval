@@ -28,7 +28,7 @@ export const ModelEvaluationView = ({ theme }: { theme: 'light' | 'dark' }) => {
         <p className={`text-sm font-bold ${health?.grader.ready ? 'text-emerald-500' : 'text-amber-500'}`}>
           {health?.grader.ready ? 'Ready' : 'Not running or model unavailable'}</p>
         <p className="text-xs opacity-75">The model proposes marks and quotes from the student answer. Code checks each quote, bounds criterion scores, and sums the final mark out of the teacher's maximum.</p>
-        <p className="text-xs opacity-75">OCR: Fast uses a local Paddle service; Accurate uses the configured Qwen vision model. The teacher checks and corrects the transcript before grading.</p>
+        <p className="text-xs opacity-75">OCR: Fast uses a local Paddle service; Accurate uses the configured Qwen vision model. Students can inspect the extracted text in their result and resubmit a corrected answer if OCR fails.</p>
       </section>
       <section className={`${card} space-y-3`}>
         <h3 className="font-bold">MCQ & teacher evaluation</h3>

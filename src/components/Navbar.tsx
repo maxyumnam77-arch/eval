@@ -3,8 +3,8 @@ import { ActiveNavTab } from '../types';
 import { Sun, Moon } from 'lucide-react';
 
 interface NavbarProps {
-  workspace: 'grading' | 'admin';
-  onWorkspaceChange: (workspace: 'grading' | 'admin') => void;
+  workspace: 'student' | 'admin';
+  onWorkspaceChange: (workspace: 'student' | 'admin') => void;
   activeTab: ActiveNavTab;
   onTabChange: (tab: ActiveNavTab) => void;
   gradedCount: number;
@@ -25,17 +25,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const isDark = theme === 'dark';
 
-  const gradingTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
-    { id: 'grade', label: 'Grade Answer' },
-    { id: 'mcq', label: 'Grade MCQs' },
-    { id: 'results', label: 'Results & Review', badge: `${gradedCount}/${totalSubmissions}` },
+  const studentTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
+    { id: 'submit', label: 'Submit Answer' },
+    { id: 'mcq', label: 'Answer MCQs' },
   ];
   const adminTabs: { id: ActiveNavTab; label: string; badge?: string }[] = [
     { id: 'bank', label: 'Question Bank' },
+    { id: 'grade', label: 'Manual Grading' },
+    { id: 'results', label: 'Results & Review', badge: `${gradedCount}/${totalSubmissions}` },
     { id: 'mcq', label: 'MCQ Answer Keys' },
     { id: 'model', label: 'Model & Evaluation' },
   ];
-  const tabs = workspace === 'grading' ? gradingTabs : adminTabs;
+  const tabs = workspace === 'student' ? studentTabs : adminTabs;
 
   return (
     <header
@@ -108,7 +109,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </div>
 
       <div className="flex gap-1 text-xs font-bold rounded-xl border border-slate-400/30 p-1">
-        <button onClick={() => onWorkspaceChange('grading')} className={`px-3 py-1.5 rounded-lg ${workspace === 'grading' ? 'bg-blue-600 text-white' : ''}`}>Grading</button>
+        <button onClick={() => onWorkspaceChange('student')} className={`px-3 py-1.5 rounded-lg ${workspace === 'student' ? 'bg-blue-600 text-white' : ''}`}>Student</button>
         <button onClick={() => onWorkspaceChange('admin')} className={`px-3 py-1.5 rounded-lg ${workspace === 'admin' ? 'bg-blue-600 text-white' : ''}`}>Admin</button>
       </div>
       {/* Navigation Links */}

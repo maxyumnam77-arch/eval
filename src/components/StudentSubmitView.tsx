@@ -1,0 +1,112 @@
+import { useEffect, useState } from 'react';
+import { request } from '../api';
+
+type Question = { id: string; code: string; title: string; prompt: string; subject: string; maxMarks: number };
+type Result = {
+  id: string; status: 'graded' | 'pending' | 'needs_transcript'; studentName: string;
+  maxMarks: number; transcript: string; ocrError: string; message?: string;
+  score?: number; feedback?: string; reviewFlags?: string[];
+  criteria?: { title: string; maxMark: number; mark: number; evidence: string }[];
+};
+
+export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'dark'; onSubmitted: () => void }) {
+  const dark = theme === 'dark';
+  const [questions, setQuestions] = useState<Question[] | null>(null);
+  const [questionId, setQuestionId] = useState('');
+  const [studentName, setStudentName] = useState('');
+  const [studentId, setStudentId] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const [ocrMode, setOcrMode] = useState('accurate');
+  const [result, setResult] = useState<Result | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    request<Question[]>('/student/questions').then(items => {
+      setQuestions(items);
+      setQuestionId(items[0]?.id || '');
+    }).catch(e => { setQuestions([]); setError((e as Error).message); });
+  }, []);
+
+  const selected = questions?.find(q => q.id === questionId);
+  const input = `w-full rounded-xl border p-3 text-sm ${dark ? 'bg-slate-950/50 border-white/20 text-white' : 'bg-white/75 border-slate-300 text-slate-900'}`;
+  const panel = `alpine-card ${dark ? 'text-slate-100' : 'light-theme text-slate-900'} p-5 sm:p-7`;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(''); setResult(null); setBusy(true);
+    const form = new FormData();
+    form.append('question_id', questionId);
+    form.append('student_name', studentName);
+    form.append('student_id', studentId);
+    form.append('answer_text', answer);
+    form.append('ocr_mode', ocrMode);
+    files.forEach(file => form.append('files', file));
+    try {
+      setResult(await request<Result>('/student/answers', { method: 'POST', body: form }));
+      onSubmitted();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  return <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+    <section className={`${panel} lg:col-span-5 space-y-5`}>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-blue-500">Student submission</p>
+        <h2 className="text-xl font-bold mt-1">Submit your answer</h2>
+        <p className="text-sm opacity-75 mt-1">Your answer is graded automatically using the approved question rubric.</p>
+      </div>
+      {!questions?.length && <p className="text-sm">No approved questions are available yet. An instructor can set one up in Admin.</p>}
+      {questions && questions.length > 0 && <form onSubmit={submit} className="space-y-4">
+        <label className="block text-sm font-semibold">Question
+          <select className={`${input} mt-1`} value={questionId} onChange={e => { setQuestionId(e.target.value); setResult(null); }}>
+            {questions.map(q => <option key={q.id} value={q.id}>{q.code} · {q.title} ({q.maxMarks} marks)</option>)}
+          </select>
+        </label>
+        {selected && <div className={`rounded-xl border p-4 text-sm ${dark ? 'bg-white/5 border-white/15' : 'bg-white/60 border-white/80'}`}>
+          <strong>{selected.subject} · Maximum {selected.maxMarks} marks</strong><p className="mt-2">{selected.prompt}</p>
+        </div>}
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="text-sm font-semibold">Name<input className={`${input} mt-1`} required value={studentName} onChange={e => setStudentName(e.target.value)} /></label>
+          <label className="text-sm font-semibold">Student ID<input className={`${input} mt-1`} required value={studentId} onChange={e => setStudentId(e.target.value)} /></label>
+        </div>
+        <label className="block text-sm font-semibold">Type your answer
+          <textarea className={`${input} mt-1 min-h-36`} value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Type here, or upload answer pages below" />
+        </label>
+        <label className="block text-sm font-semibold">Answer images (optional, up to 12 pages)
+          <input className={`${input} mt-1`} type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => setFiles(Array.from(e.target.files || []))} />
+        </label>
+        {files.length > 0 && <label className="block text-sm font-semibold">Read images with
+          <select className={`${input} mt-1`} value={ocrMode} onChange={e => setOcrMode(e.target.value)}>
+            <option value="accurate">Qwen vision OCR</option><option value="fast">Paddle OCR</option><option value="manual">Use my typed answer</option>
+          </select>
+        </label>}
+        <button className="alpine-btn-blue text-white w-full p-3 font-bold disabled:opacity-50" disabled={busy || (!answer.trim() && !files.length) || (ocrMode === 'manual' && !answer.trim())}>
+          {busy ? 'Reading and grading your answer…' : 'Submit and get result'}
+        </button>
+        <p className="text-xs opacity-70">For images, check the extracted text shown with your result. If OCR cannot read it, type the answer and submit again.</p>
+      </form>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+    </section>
+    <section className={`${panel} lg:col-span-7 min-h-[450px]`} aria-live="polite">
+      <h2 className="font-bold text-lg">Your result</h2>
+      {!result && <p className="text-sm opacity-70 mt-3">Submit an answer to see your score and criterion feedback here.</p>}
+      {result && <div className="space-y-4 mt-4">
+        {result.status === 'graded' ? <div className="rounded-xl bg-emerald-600 text-white p-5">
+          <p className="text-sm">Automatic grade for {result.studentName}</p>
+          <p className="text-3xl font-bold">{result.score} / {result.maxMarks}</p>
+        </div> : <p className="rounded-xl bg-amber-100 text-amber-900 p-4 text-sm">{result.message}</p>}
+        {result.reviewFlags?.map(flag => <p key={flag} className="text-sm text-amber-600">Needs review: {flag}</p>)}
+        {result.criteria?.map((c, i) => <div key={i} className={`rounded-xl border p-4 text-sm ${dark ? 'border-white/20' : 'border-slate-300'}`}>
+          <div className="flex justify-between gap-2 font-semibold"><span>{c.title}</span><span>{c.mark} / {c.maxMark}</span></div>
+          <p className="text-xs opacity-75 mt-1">Evidence: {c.evidence || 'No verified evidence'}</p>
+        </div>)}
+        {result.feedback && <p className="text-sm">Feedback: {result.feedback}</p>}
+        {result.transcript && <details className="text-sm"><summary className="cursor-pointer font-semibold">Text used for grading</summary>
+          <p className="whitespace-pre-wrap mt-2 p-3 rounded-xl border border-slate-400/30">{result.transcript}</p></details>}
+        {result.ocrError && <p className="text-xs text-amber-600">OCR: {result.ocrError}</p>}
+      </div>}
+    </section>
+  </div>;
+}

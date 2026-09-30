@@ -66,6 +66,27 @@ def test_full_credit_is_five_of_five_with_real_evidence(client, monkeypatch):
     assert override.json()["modelTotal"] == 5
 
 
+def test_student_submits_and_gets_automatic_grade(client, monkeypatch):
+    draft = create_question(client, approved=False)
+    assert client.get("/api/student/questions").json() == []
+    assert client.post("/api/student/answers", data={"question_id": draft["id"], "student_name": "Sam",
+        "student_id": "S1", "answer_text": "Framing."}).status_code == 409
+    approved = question_payload(approved=True)
+    assert client.put(f"/api/questions/{draft['id']}", json=approved).status_code == 200
+    public = client.get("/api/student/questions").json()
+    assert len(public) == 1 and "referenceAnswer" not in public[0]
+    monkeypatch.setattr(grading, "_chat", lambda *_args, **_kwargs: __import__("json").dumps({
+        "criteria": [{"id": "c1", "mark": 1, "evidence": "Framing", "reason": "Correct"}],
+        "feedback": "One function given."}))
+    response = client.post("/api/student/answers", data={"question_id": draft["id"],
+        "student_name": "Sam", "student_id": "S1", "answer_text": "Framing."})
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "graded" and result["score"] == 1
+    assert result["maxMarks"] == 5 and result["criteria"][0]["evidence"] == "Framing"
+    assert "referenceAnswer" not in result
+
+
 def test_hallucinated_evidence_cannot_earn_mark():
     scores, flags = grading.validate_grade({"criteria": [
         {"id": "c1", "mark": 1, "evidence": "invented phrase", "reason": "Claim"}]},

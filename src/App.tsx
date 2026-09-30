@@ -8,11 +8,12 @@ import { MCQView } from './components/MCQView';
 import { ResultsReviewView } from './components/ResultsReviewView';
 import { ModelEvaluationView } from './components/ModelEvaluationView';
 import { QuestionSelectModal } from './components/QuestionSelectModal';
+import { StudentSubmitView } from './components/StudentSubmitView';
 
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [activeTab, setActiveTab] = useState<ActiveNavTab>('grade');
-  const [workspace, setWorkspace] = useState<'grading' | 'admin'>('grading');
+  const [activeTab, setActiveTab] = useState<ActiveNavTab>('submit');
+  const [workspace, setWorkspace] = useState<'student' | 'admin'>('student');
   const [questions, setQuestions] = useState<DescriptiveQuestion[]>([]);
   const [submissions, setSubmissions] = useState<StudentSubmission[]>([]);
   const [mcqs, setMcqs] = useState<MCQQuestion[]>([]);
@@ -23,9 +24,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const run = async (action: () => Promise<void>) => {
+  const run = async <T,>(action: () => Promise<T>): Promise<T> => {
     setError('');
-    try { await action(); } catch (e) { setError((e as Error).message); throw e; }
+    try { return await action(); } catch (e) { setError((e as Error).message); throw e; }
   };
   const refresh = async () => {
     const [q, s, m, a] = await Promise.all([
@@ -35,7 +36,6 @@ export default function App() {
     setQuestions(q); setSubmissions(s); setMcqs(m); setAttempts(a);
     setSelectedQuestionId(prev => q.some(item => item.id === prev) ? prev : q[0]?.id || '');
     setActiveSubmissionId(prev => s.some(item => item.id === prev) ? prev : s[0]?.id || '');
-    if (!q.length) { setWorkspace('admin'); setActiveTab('bank'); }
   };
   useEffect(() => { refresh().catch(e => setError((e as Error).message)).finally(() => setLoading(false)); }, []);
 
@@ -90,6 +90,7 @@ export default function App() {
   const createAttempt = (studentName: string, studentId: string, answers: Record<string, string>) => run(async () => {
     const created = await request<MCQStudentAttempt>('/mcq-attempts', json('POST', { studentName, studentId, answers }));
     setAttempts(prev => [created, ...prev]);
+    return created;
   });
 
   const question = questions.find(q => q.id === selectedQuestionId) || questions[0];
@@ -100,21 +101,22 @@ export default function App() {
         ? 'radial-gradient(ellipse at 50% 0%, #1c2a43, #0b101c 75%)'
         : 'radial-gradient(ellipse at 12% 18%, #bdcbd9, transparent 75%), radial-gradient(ellipse at 88% 80%, #ddd5cf, transparent 75%), linear-gradient(135deg,#C9D2DB,#e7eaec)' }}>
       <main className={`alpine-window ${!isDark ? 'light-theme' : ''} relative w-full max-w-[1360px] p-6 sm:p-7 lg:p-8 space-y-6`}>
-        <Navbar workspace={workspace} onWorkspaceChange={value => { setWorkspace(value); setActiveTab(value === 'admin' ? 'bank' : 'grade'); }}
+        <Navbar workspace={workspace} onWorkspaceChange={value => { setWorkspace(value); setActiveTab(value === 'admin' ? 'bank' : 'submit'); }}
           activeTab={activeTab} onTabChange={setActiveTab} gradedCount={submissions.filter(s => s.status === 'graded').length}
           totalSubmissions={submissions.length} theme={theme} onToggleTheme={() => setTheme(isDark ? 'light' : 'dark')} />
         {error && <div role="alert" className={`rounded-xl border px-4 py-3 text-sm flex justify-between gap-3 ${isDark ? 'bg-red-900/40 text-red-100 border-red-400/40' : 'bg-red-50 text-red-900 border-red-300'}`}>
           <span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
         {loading ? <div className={`alpine-card ${!isDark ? 'light-theme' : ''} p-8`}>Loading project data…</div> : <>
+          {activeTab === 'submit' && <StudentSubmitView theme={theme} onSubmitted={() => { refresh().catch(e => setError((e as Error).message)); }} />}
           {activeTab === 'bank' && <QuestionBankView questions={questions} theme={theme} onAddQuestion={q => { createQuestion(q).catch(() => {}); }}
             onUpdateQuestion={q => { updateQuestion(q).catch(() => {}); }} onDeleteQuestion={id => { deleteQuestion(id).catch(() => {}); }}
-            onSelectForGrading={q => { setSelectedQuestionId(q.id); setWorkspace('grading'); setActiveTab('grade'); }} />}
+            onSelectForGrading={q => { setSelectedQuestionId(q.id); setWorkspace('admin'); setActiveTab('grade'); }} />}
           {activeTab === 'grade' && (question ? <GradeAnswerView question={question} submissions={submissions.filter(s => s.questionId === question.id)}
             activeSubmissionId={activeSubmissionId} theme={theme} onSelectSubmission={setActiveSubmissionId}
             onOpenQuestionModal={() => setIsQuestionModalOpen(true)} onNavigateToBank={() => { setWorkspace('admin'); setActiveTab('bank'); }}
             onCreateSubmission={createSubmission} onGradeSubmission={gradeSubmission} onUpdateSubmissionTranscript={updateTranscript} />
             : <div className={`alpine-card ${!isDark ? 'light-theme' : ''} p-8`}>Create a question and approve its rubric in Question Bank to begin.</div>)}
-          {activeTab === 'mcq' && <MCQView mcqs={mcqs} studentAttempts={attempts} theme={theme} workspace={workspace}
+          {activeTab === 'mcq' && <MCQView mcqs={mcqs} studentAttempts={attempts} theme={theme} workspace={workspace === 'student' ? 'grading' : 'admin'}
             onAddMCQ={createMCQ} onUpdateMCQ={updateMCQ} onDeleteMCQ={deleteMCQ} onCreateAttempt={createAttempt} />}
           {activeTab === 'results' && <ResultsReviewView questions={questions} submissions={submissions} theme={theme}
             onTeacherOverrideCriterion={overrideMark} onGradeSingleSubmission={gradeSubmission} onSaveFeedback={saveFeedback}

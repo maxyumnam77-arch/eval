@@ -86,4 +86,4 @@ export interface MCQStudentAttempt {
   results?: { questionId: string; studentAnswer: string; correctKey: string; awarded: number }[];
 }
 
-export type ActiveNavTab = 'grade' | 'bank' | 'mcq' | 'results' | 'model';
+export type ActiveNavTab = 'submit' | 'grade' | 'bank' | 'mcq' | 'results' | 'model';

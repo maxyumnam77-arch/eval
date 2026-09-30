@@ -1,9 +1,19 @@
 const API = '/api';
+const TOKEN_KEY = 'smart-exam-session';
+
+export const getAuthToken = () => sessionStorage.getItem(TOKEN_KEY);
+export const setAuthToken = (token: string | null) => {
+  if (token) sessionStorage.setItem(TOKEN_KEY, token);
+  else sessionStorage.removeItem(TOKEN_KEY);
+};
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(API + path, options);
+    const headers = new Headers(options?.headers);
+    const token = getAuthToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    response = await fetch(API + path, { ...options, headers });
   } catch {
     throw new Error('Backend unavailable. Start the local FastAPI server.');
   }

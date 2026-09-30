@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from backend import db, grading
+from backend import auth, db, grading
 from backend.main import app
 
 
@@ -14,6 +14,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     monkeypatch.setattr(db, "UPLOAD_DIR", tmp_path / "uploads")
     with TestClient(app) as test_client:
+        auth.create_user("instructor", "Instructor", "test-password", role="admin")
+        test_client.headers.update({"Authorization": f"Bearer {auth.login('instructor', 'test-password')['token']}"})
         yield test_client
 
 
@@ -155,3 +157,44 @@ def test_teacher_label_and_rubric_history(client, monkeypatch):
     saved = client.get("/api/submissions").json()[0]
     assert saved["rubricSnapshot"]["title"] == "Five functions"
     assert saved["questionVersion"] == 1
+
+
+def test_student_access_ocr_review_history_and_mcq_scan(client, monkeypatch):
+    question = create_question(client)
+    mcq = client.post("/api/mcqs", json={"code": "M1", "question": "Which?", "subject": "General",
+        "correctKey": "B", "options": [{"key": "A", "text": "A"}, {"key": "B", "text": "B"}]}).json()
+    student = client.post("/api/auth/register", json={"username": "student01", "displayName": "Sam",
+        "password": "student-pass-1"}).json()
+    client.headers.update({"Authorization": f"Bearer {student['token']}"})
+    assert client.get("/api/questions").status_code == 403
+    assert client.get("/api/submissions").status_code == 403
+    assert "referenceAnswer" not in client.get("/api/student/questions").json()[0]
+    assert "correctKey" not in client.get("/api/student/mcqs").json()[0]
+    monkeypatch.setattr(grading, "transcribe", lambda _image: "Fram1ng.")
+    image = io.BytesIO()
+    Image.new("RGB", (40, 40), "white").save(image, "PNG")
+    draft = client.post("/api/student/answers/draft", data={"question_id": question["id"]},
+        files=[("files", ("page.png", image.getvalue(), "image/png"))])
+    assert draft.status_code == 201 and draft.json()["status"] == "pending"
+    assert draft.json()["transcript"] == "Fram1ng."
+    sid = draft.json()["id"]
+    assert client.get(f"/api/submissions/{sid}/pages/0").status_code == 200
+    monkeypatch.setattr(grading, "_chat", lambda *_args, **_kwargs: __import__("json").dumps({
+        "criteria": [{"id": "c1", "mark": 1, "evidence": "Framing", "reason": "Correct"}]}))
+    result = client.post(f"/api/student/answers/{sid}/grade", json={"text": "Framing."})
+    assert result.status_code == 200 and result.json()["score"] == 1
+    assert client.get("/api/student/answers").json()[0]["transcript"] == "Framing."
+    assert client.get("/api/student/answers").json()[0]["id"] == sid
+    assert client.post(f"/api/student/answers/{sid}/grade", json={"text": "Different."}).status_code == 409
+    monkeypatch.setattr(grading, "detect_mcq_choices", lambda _image, _codes: ({"M1": "B"}, []))
+    scan = client.post("/api/student/mcqs/scan", files={"file": ("sheet.png", image.getvalue(), "image/png")})
+    assert scan.json()["answers"] == {mcq["id"]: "B"}
+    attempt = client.post("/api/student/mcq-attempts", json={"studentName": "Other", "studentId": "Other",
+        "answers": {mcq["id"]: scan.json()["answers"][mcq["id"]]}})
+    assert attempt.json()["score"] == 1 and attempt.json()["studentId"] == "student01"
+    assert len(client.get("/api/student/mcq-attempts").json()) == 1
+    second = client.post("/api/auth/register", json={"username": "student02", "displayName": "Lee",
+        "password": "student-pass-2"}).json()
+    client.headers.update({"Authorization": f"Bearer {second['token']}"})
+    assert client.get("/api/student/answers").json() == []
+    assert client.get(f"/api/submissions/{sid}/pages/0").status_code == 404

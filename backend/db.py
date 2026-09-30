@@ -58,7 +58,20 @@ def initialize():
                 submission_id TEXT PRIMARY KEY REFERENCES submissions(id), mark REAL NOT NULL,
                 recorded_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('student','admin')),
+                password_hash TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL
+            );
         """)
+        # Existing local databases receive owner columns without changing historical records.
+        for table in ("submissions", "mcq_attempts"):
+            if "owner_user_id" not in {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT")
 
 
 @contextmanager

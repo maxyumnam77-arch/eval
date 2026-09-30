@@ -1,33 +1,48 @@
 import { useEffect, useState } from 'react';
-import { request } from '../api';
+import { getAuthToken, json, request } from '../api';
+import { Account } from './LoginView';
 
 type Question = { id: string; code: string; title: string; prompt: string; subject: string; maxMarks: number };
 type Result = {
-  id: string; status: 'graded' | 'pending' | 'needs_transcript'; studentName: string;
+  id: string; status: 'graded' | 'pending'; studentName: string; questionTitle: string; submittedAt: string;
   maxMarks: number; transcript: string; ocrError: string; message?: string;
   score?: number; feedback?: string; reviewFlags?: string[];
   criteria?: { title: string; maxMark: number; mark: number; evidence: string }[];
+  pages: { position: number; fileName: string; url: string }[];
 };
 
-export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'dark'; onSubmitted: () => void }) {
+export function StudentSubmitView({ theme, account, onSubmitted }: { theme: 'light' | 'dark'; account: Account; onSubmitted: () => void }) {
   const dark = theme === 'dark';
   const [questions, setQuestions] = useState<Question[] | null>(null);
   const [questionId, setQuestionId] = useState('');
-  const [studentName, setStudentName] = useState('');
-  const [studentId, setStudentId] = useState('');
   const [answer, setAnswer] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [ocrMode, setOcrMode] = useState('accurate');
   const [result, setResult] = useState<Result | null>(null);
+  const [draft, setDraft] = useState<Result | null>(null);
+  const [reviewedText, setReviewedText] = useState('');
+  const [history, setHistory] = useState<Result[]>([]);
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewUrl, setPreviewUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    request<Question[]>('/student/questions').then(items => {
-      setQuestions(items);
-      setQuestionId(items[0]?.id || '');
-    }).catch(e => { setQuestions([]); setError((e as Error).message); });
+    Promise.all([request<Question[]>('/student/questions'), request<Result[]>('/student/answers')])
+      .then(([items, saved]) => { setQuestions(items); setQuestionId(items[0]?.id || ''); setHistory(saved); })
+      .catch(e => { setQuestions([]); setError((e as Error).message); });
   }, []);
+
+  useEffect(() => {
+    const page = draft?.pages[previewPage];
+    if (!page) return;
+    let url = '';
+    fetch(page.url, { headers: { Authorization: `Bearer ${getAuthToken() || ''}` } })
+      .then(response => { if (!response.ok) throw new Error('Page unavailable'); return response.blob(); })
+      .then(blob => { url = URL.createObjectURL(blob); setPreviewUrl(url); })
+      .catch(() => setPreviewUrl(''));
+    return () => { if (url) URL.revokeObjectURL(url); setPreviewUrl(''); };
+  }, [draft, previewPage]);
 
   const selected = questions?.find(q => q.id === questionId);
   const input = `w-full rounded-xl border p-3 text-sm ${dark ? 'bg-slate-950/50 border-white/20 text-white' : 'bg-white/75 border-slate-300 text-slate-900'}`;
@@ -35,16 +50,33 @@ export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'da
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    setError(''); setResult(null); setBusy(true);
+    setError(''); setResult(null); setDraft(null); setBusy(true);
     const form = new FormData();
     form.append('question_id', questionId);
-    form.append('student_name', studentName);
-    form.append('student_id', studentId);
     form.append('answer_text', answer);
     form.append('ocr_mode', ocrMode);
     files.forEach(file => form.append('files', file));
     try {
-      setResult(await request<Result>('/student/answers', { method: 'POST', body: form }));
+      if (files.length && !answer.trim() && ocrMode !== 'manual') {
+        const pending = await request<Result>('/student/answers/draft', { method: 'POST', body: form });
+        setDraft(pending); setReviewedText(pending.transcript); setPreviewPage(0);
+      } else {
+        setResult(await request<Result>('/student/answers', { method: 'POST', body: form }));
+      }
+      setHistory(await request<Result[]>('/student/answers'));
+      onSubmitted();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const confirmAndGrade = async () => {
+    if (!draft) return;
+    setBusy(true); setError('');
+    try {
+      const scored = await request<Result>(`/student/answers/${draft.id}/grade`, json('POST', { text: reviewedText }));
+      if (scored.status === 'graded') { setResult(scored); setDraft(null); }
+      else setDraft(scored);
+      setHistory(await request<Result[]>('/student/answers'));
       onSubmitted();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
@@ -55,7 +87,7 @@ export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'da
       <div>
         <p className="text-xs font-bold uppercase tracking-widest text-blue-500">Student submission</p>
         <h2 className="text-xl font-bold mt-1">Submit your answer</h2>
-        <p className="text-sm opacity-75 mt-1">Your answer is graded automatically using the approved question rubric.</p>
+        <p className="text-sm opacity-75 mt-1">Signed in as {account.displayName} ({account.username}). Typed answers grade immediately; review scanned text before grading.</p>
       </div>
       {!questions?.length && <p className="text-sm">No approved questions are available yet. An instructor can set one up in Admin.</p>}
       {questions && questions.length > 0 && <form onSubmit={submit} className="space-y-4">
@@ -67,10 +99,6 @@ export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'da
         {selected && <div className={`rounded-xl border p-4 text-sm ${dark ? 'bg-white/5 border-white/15' : 'bg-white/60 border-white/80'}`}>
           <strong>{selected.subject} · Maximum {selected.maxMarks} marks</strong><p className="mt-2">{selected.prompt}</p>
         </div>}
-        <div className="grid sm:grid-cols-2 gap-3">
-          <label className="text-sm font-semibold">Name<input className={`${input} mt-1`} required value={studentName} onChange={e => setStudentName(e.target.value)} /></label>
-          <label className="text-sm font-semibold">Student ID<input className={`${input} mt-1`} required value={studentId} onChange={e => setStudentId(e.target.value)} /></label>
-        </div>
         <label className="block text-sm font-semibold">Type your answer
           <textarea className={`${input} mt-1 min-h-36`} value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Type here, or upload answer pages below" />
         </label>
@@ -83,10 +111,27 @@ export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'da
           </select>
         </label>}
         <button className="alpine-btn-blue text-white w-full p-3 font-bold disabled:opacity-50" disabled={busy || (!answer.trim() && !files.length) || (ocrMode === 'manual' && !answer.trim())}>
-          {busy ? 'Reading and grading your answer…' : 'Submit and get result'}
+          {busy ? 'Working…' : files.length && !answer.trim() ? 'Read images for review' : 'Submit and get result'}
         </button>
-        <p className="text-xs opacity-70">For images, check the extracted text shown with your result. If OCR cannot read it, type the answer and submit again.</p>
+        <p className="text-xs opacity-70">For images, check and correct the extracted words before the model assigns marks.</p>
       </form>}
+      {draft && <div className="space-y-3 border-t border-slate-400/30 pt-5">
+        <h3 className="font-bold">Review scanned answer</h3>
+        <p className="text-xs opacity-75">Check the original page against the OCR text. Your corrected text is what gets graded.</p>
+        {draft.pages.length > 0 && <div>
+          <div className="flex gap-2 flex-wrap">{draft.pages.map(page => <button key={page.position} type="button"
+            onClick={() => setPreviewPage(page.position)} className={`text-xs px-3 py-1.5 rounded-lg border ${previewPage === page.position ? 'bg-blue-600 text-white' : ''}`}>
+            Page {page.position + 1}</button>)}</div>
+          {previewUrl && <img src={previewUrl} alt={`Uploaded answer page ${previewPage + 1}`} className="w-full max-h-72 object-contain mt-2 rounded-lg border" />}
+        </div>}
+        {draft.ocrError && <p className="text-xs text-amber-600">OCR issue: {draft.ocrError}</p>}
+        <textarea className={`${input} min-h-40`} aria-label="Corrected answer text" value={reviewedText}
+          onChange={e => setReviewedText(e.target.value)} placeholder="Correct the OCR text here or type the answer if it could not be read" />
+        {draft.message && <p className="text-xs text-amber-600">{draft.message}</p>}
+        <button type="button" onClick={confirmAndGrade} disabled={busy || !reviewedText.trim()}
+          className="alpine-btn-blue text-white w-full p-3 font-bold disabled:opacity-50">
+          {busy ? 'Grading…' : 'Confirm text and get grade'}</button>
+      </div>}
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     </section>
     <section className={`${panel} lg:col-span-7 min-h-[450px]`} aria-live="polite">
@@ -107,6 +152,15 @@ export function StudentSubmitView({ theme, onSubmitted }: { theme: 'light' | 'da
           <p className="whitespace-pre-wrap mt-2 p-3 rounded-xl border border-slate-400/30">{result.transcript}</p></details>}
         {result.ocrError && <p className="text-xs text-amber-600">OCR: {result.ocrError}</p>}
       </div>}
+      <div className="border-t border-slate-400/30 mt-6 pt-5">
+        <h3 className="font-bold">Your previous answers ({history.length})</h3>
+        {!history.length && <p className="text-sm opacity-70 mt-2">No attempts yet.</p>}
+        <div className="space-y-2 mt-3">{history.map(item => <button key={item.id} type="button" onClick={() => { setResult(item); if (item.status === 'pending') { setDraft(item); setReviewedText(item.transcript); } }}
+          className="w-full text-left rounded-xl border border-slate-400/30 p-3 text-sm flex justify-between gap-3">
+          <span><strong>{item.questionTitle}</strong><span className="block text-xs opacity-70">{new Date(item.submittedAt).toLocaleString()}</span></span>
+          <span className="font-bold whitespace-nowrap">{item.status === 'graded' ? `${item.score}/${item.maxMarks}` : 'Pending'}</span>
+        </button>)}</div>
+      </div>
     </section>
   </div>;
 }

@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
-from . import db, grading
+from . import auth, db, grading
 
 
 def now():
@@ -84,6 +84,12 @@ class TeacherLabelInput(BaseModel):
     mark: float = Field(ge=0)
 
 
+class AccountInput(BaseModel):
+    username: str
+    password: str
+    displayName: str = ""
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.initialize()
@@ -92,7 +98,63 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Smart Exam Evaluation", version="1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-                   allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type"])
+                   allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Content-Type", "Authorization"])
+
+
+@app.middleware("http")
+async def access_control(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or path in {"/api/health", "/api/auth/login", "/api/auth/register"}:
+        return await call_next(request)
+    header = request.headers.get("Authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else ""
+    user = auth.user_for_token(token)
+    if not user:
+        return JSONResponse({"detail": "Sign in to continue."}, status_code=401)
+    request.state.user = user
+    request.state.token = token
+    if user["role"] == "admin":
+        return await call_next(request)
+    if path.startswith("/api/student/") or path.startswith("/api/auth/"):
+        return await call_next(request)
+    if request.method == "GET" and path.startswith("/api/submissions/") and "/pages/" in path:
+        sid = path.split("/")[3]
+        with db.connection() as conn:
+            owner = conn.execute("SELECT owner_user_id FROM submissions WHERE id=?", (sid,)).fetchone()
+        if owner and owner["owner_user_id"] == user["id"]:
+            return await call_next(request)
+        return JSONResponse({"detail": "Page not found."}, status_code=404)
+    return JSONResponse({"detail": "Admin access required."}, status_code=403)
+
+
+@app.post("/api/auth/register", status_code=201)
+def register(payload: AccountInput):
+    try:
+        auth.create_user(payload.username, payload.displayName, payload.password)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "Student ID is already registered.") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return auth.login(payload.username, payload.password)
+
+
+@app.post("/api/auth/login")
+def login(payload: AccountInput):
+    session = auth.login(payload.username, payload.password)
+    if not session:
+        raise HTTPException(401, "Incorrect ID or password.")
+    return session
+
+
+@app.get("/api/auth/me")
+def current_user(request: Request):
+    return request.state.user
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    auth.logout(request.state.token)
+    return {"signedOut": True}
 
 
 def question_out(conn, row):
@@ -195,7 +257,7 @@ def grade_out(row):
     overrides = json.loads(row["overrides"])
     scores = json.loads(row["criteria_scores"])
     effective = [{**s, "mark": overrides.get(s["criterionId"], {}).get("mark", s["mark"])} for s in scores]
-    return {"id": row["id"], "modelName": row["model_name"], "questionVersion": row["question_version"],
+    return {"gradeId": row["id"], "modelName": row["model_name"], "questionVersion": row["question_version"],
             "rubricSnapshot": json.loads(row["rubric_snapshot"]), "answerSnapshot": row["answer_snapshot"],
             "criteriaScores": effective, "modelScores": scores, "reviewFlags": json.loads(row["review_flags"]),
             "modelTotal": row["model_total"], "evaluatedTotalScore": round(sum(s["mark"] for s in effective), 2),
@@ -282,7 +344,9 @@ async def add_submission(question_id: str = Form(...), student_name: str = Form(
     original = "\n\n".join(t for t in transcript if t)
     reviewed = answer_text.strip() or original
     with db.connection() as conn:
-        conn.execute("INSERT INTO submissions VALUES (?,?,?,?,?,?,?,?,?,?,?)", (
+        conn.execute("""INSERT INTO submissions (id, question_id, student_name, student_id, file_name,
+            submitted_at, ocr_original, ocr_transcript, ocr_engine, ocr_error, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (
             sid, question_id, student_name.strip(), student_id.strip(),
             ", ".join(name for name, _ in images), timestamp, original, reviewed,
             ocr_mode if images else "typed", "; ".join(errors), "pending"))
@@ -291,38 +355,101 @@ async def add_submission(question_id: str = Form(...), student_name: str = Form(
         return submission_out(conn, conn.execute("SELECT * FROM submissions WHERE id=?", (sid,)).fetchone())
 
 
+def student_response(submission, message=None):
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM questions WHERE id=?", (submission["questionId"],)).fetchone()
+        question = question_out(conn, row)
+    snapshot = submission.get("rubricSnapshot") or question
+    result = {"id": submission["id"], "studentName": submission["studentName"],
+              "questionId": submission["questionId"], "questionTitle": snapshot["title"],
+              "maxMarks": snapshot["maxMarks"], "submittedAt": submission["submittedAt"],
+              "transcript": submission["ocrTranscript"], "ocrError": submission["ocrError"],
+              "status": submission["status"], "pages": submission["pages"]}
+    if message:
+        result["message"] = message
+    if submission["status"] == "graded":
+        result.update({"score": submission["evaluatedTotalScore"],
+                       "feedback": submission["teacherFeedback"], "reviewFlags": submission["reviewFlags"],
+                       "criteria": [{"title": criterion["title"], "maxMark": criterion["maxMark"],
+                                     "mark": next((score["mark"] for score in submission["criteriaScores"]
+                                                   if score["criterionId"] == criterion["id"]), 0),
+                                     "evidence": next((score["evidence"] for score in submission["criteriaScores"]
+                                                       if score["criterionId"] == criterion["id"]), "")}
+                                    for criterion in snapshot["criteria"]]})
+    return result
+
+
+def assert_student_owns(sid, user):
+    with db.connection() as conn:
+        row = conn.execute("SELECT * FROM submissions WHERE id=? AND owner_user_id=?", (sid, user["id"])).fetchone()
+        if not row:
+            raise HTTPException(404, "Submission not found.")
+        return submission_out(conn, row)
+
+
+@app.get("/api/student/answers")
+def student_history(request: Request):
+    with db.connection() as conn:
+        rows = conn.execute("SELECT * FROM submissions WHERE owner_user_id=? ORDER BY submitted_at DESC, rowid DESC",
+                            (request.state.user["id"],)).fetchall()
+        return [student_response(submission_out(conn, row)) for row in rows]
+
+
+@app.post("/api/student/answers/draft", status_code=201)
+async def student_answer_draft(request: Request, question_id: str = Form(...),
+                               ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None)):
+    with db.connection() as conn:
+        row = conn.execute("SELECT rubric_approved FROM questions WHERE id=?", (question_id,)).fetchone()
+        if not row or not row["rubric_approved"]:
+            raise HTTPException(409, "This question is not available for automatic grading.")
+    if not files:
+        raise HTTPException(422, "Upload at least one answer image.")
+    user = request.state.user
+    submission = await add_submission(question_id, user["displayName"], user["username"], "", ocr_mode, files)
+    with db.connection() as conn:
+        conn.execute("UPDATE submissions SET owner_user_id=? WHERE id=?", (user["id"], submission["id"]))
+    return student_response(submission, "Review the extracted text, then confirm to grade.")
+
+
+@app.post("/api/student/answers/{sid}/grade")
+def grade_student_draft(sid: str, payload: TranscriptInput, request: Request):
+    submission = assert_student_owns(sid, request.state.user)
+    if submission["status"] == "graded":
+        raise HTTPException(409, "This answer has already been graded. Submit a new attempt to try again.")
+    if not payload.text.strip():
+        raise HTTPException(422, "Enter the answer text before grading.")
+    update_transcript(sid, payload)
+    try:
+        return student_response(grade_submission(sid))
+    except HTTPException as exc:
+        if exc.status_code not in (422, 503):
+            raise
+        return student_response(assert_student_owns(sid, request.state.user), str(exc.detail))
+
+
 @app.post("/api/student/answers", status_code=201)
-async def submit_student_answer(question_id: str = Form(...), student_name: str = Form(...),
-                                student_id: str = Form(...), answer_text: str = Form(""),
+async def submit_student_answer(request: Request, question_id: str = Form(...), answer_text: str = Form(""),
                                 ocr_mode: str = Form("accurate"), files: list[UploadFile] | None = File(None)):
     """Accept a student answer and grade it immediately against an approved rubric."""
     with db.connection() as conn:
         row = conn.execute("SELECT * FROM questions WHERE id=?", (question_id,)).fetchone()
         if not row or not row["rubric_approved"]:
             raise HTTPException(409, "This question is not available for automatic grading.")
-        question = question_out(conn, row)
+    user = request.state.user
     # A typed correction takes precedence over OCR, while images remain saved as source pages.
-    submission = await add_submission(question_id, student_name, student_id, answer_text,
+    submission = await add_submission(question_id, user["displayName"], user["username"], answer_text,
                                       "manual" if answer_text.strip() else ocr_mode, files)
-    result = {"id": submission["id"], "studentName": submission["studentName"],
-              "questionId": question_id, "maxMarks": question["maxMarks"],
-              "transcript": submission["ocrTranscript"], "ocrError": submission["ocrError"]}
+    with db.connection() as conn:
+        conn.execute("UPDATE submissions SET owner_user_id=? WHERE id=?", (user["id"], submission["id"]))
     if not submission["ocrTranscript"].strip():
-        return {**result, "status": "needs_transcript", "message": "OCR could not read the answer. Type the answer and submit again."}
+        return student_response(submission, "OCR could not read the answer. Type the answer and submit again.")
     try:
         graded = grade_submission(submission["id"])
     except HTTPException as exc:
         if exc.status_code not in (422, 503):
             raise
-        return {**result, "status": "pending", "message": str(exc.detail)}
-    return {**result, "status": "graded", "score": graded["evaluatedTotalScore"],
-            "feedback": graded["teacherFeedback"], "reviewFlags": graded["reviewFlags"],
-            "criteria": [{"title": criterion["title"], "maxMark": criterion["maxMark"],
-                          "mark": next((score["mark"] for score in graded["criteriaScores"]
-                                        if score["criterionId"] == criterion["id"]), 0),
-                          "evidence": next((score["evidence"] for score in graded["criteriaScores"]
-                                            if score["criterionId"] == criterion["id"]), "")}
-                         for criterion in question["criteria"]]}
+        return student_response(submission, str(exc.detail))
+    return student_response(graded)
 
 
 @app.get("/api/submissions/{sid}/pages/{position}")
@@ -402,7 +529,7 @@ def save_feedback(sid: str, payload: FeedbackInput):
 
 def mcq_out(row, include_key=True):
     item = {"id": row["id"], "code": row["code"], "subject": row["subject"], "question": row["question"],
-            "options": json.loads(row["options"]), "explanation": row["explanation"], "mark": row["mark"]}
+            "options": json.loads(row["options"]), "explanation": row["explanation"] if include_key else "", "mark": row["mark"]}
     if include_key:
         item["correctKey"] = row["correct_key"]
     return item
@@ -418,6 +545,28 @@ def validate_mcq(payload):
 def list_mcqs():
     with db.connection() as conn:
         return [mcq_out(row) for row in conn.execute("SELECT * FROM mcqs ORDER BY rowid")]
+
+
+@app.get("/api/student/mcqs")
+def student_mcqs():
+    with db.connection() as conn:
+        return [mcq_out(row, include_key=False) for row in conn.execute("SELECT * FROM mcqs ORDER BY rowid")]
+
+
+@app.post("/api/student/mcqs/scan")
+async def scan_mcq_sheet(file: UploadFile = File(...)):
+    image = check_image(await file.read())
+    with db.connection() as conn:
+        rows = conn.execute("SELECT id, code FROM mcqs ORDER BY rowid").fetchall()
+        if not rows:
+            raise HTTPException(409, "No MCQ questions are available.")
+    try:
+        by_code, uncertain = grading.detect_mcq_choices(image, [row["code"] for row in rows])
+    except grading.ModelUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"answers": {row["id"]: by_code[row["code"]] for row in rows},
+            "uncertainCodes": uncertain,
+            "message": "Review the detected choices before scoring. Blank or unclear marks earn no credit."}
 
 
 @app.post("/api/mcqs", status_code=201)
@@ -469,11 +618,32 @@ def grade_mcq_attempt(payload: AttemptInput):
             results.append({"questionId": q["id"], "studentAnswer": answer,
                             "correctKey": q["correct_key"], "awarded": 1 if answer == q["correct_key"] else 0})
         aid, score, timestamp = new_id(), sum(item["awarded"] for item in results), now()
-        conn.execute("INSERT INTO mcq_attempts VALUES (?,?,?,?,?,?,?,?)", (
+        conn.execute("""INSERT INTO mcq_attempts (id, student_name, student_id, answers, results,
+            score, max_marks, submitted_at) VALUES (?,?,?,?,?,?,?,?)""", (
             aid, payload.studentName.strip(), payload.studentId.strip(), json.dumps(payload.answers),
             json.dumps(results), score, len(questions), timestamp))
         return {"id": aid, "studentName": payload.studentName, "studentId": payload.studentId,
                 "answers": payload.answers, "results": results, "score": score, "maxMarks": len(questions), "submittedAt": timestamp}
+
+
+@app.post("/api/student/mcq-attempts", status_code=201)
+def student_mcq_attempt(payload: AttemptInput, request: Request):
+    user = request.state.user
+    result = grade_mcq_attempt(AttemptInput(studentName=user["displayName"], studentId=user["username"],
+                                            answers=payload.answers))
+    with db.connection() as conn:
+        conn.execute("UPDATE mcq_attempts SET owner_user_id=? WHERE id=?", (user["id"], result["id"]))
+    return result
+
+
+@app.get("/api/student/mcq-attempts")
+def student_mcq_history(request: Request):
+    with db.connection() as conn:
+        return [{"id": row["id"], "studentName": row["student_name"], "studentId": row["student_id"],
+                 "answers": json.loads(row["answers"]), "results": json.loads(row["results"]),
+                 "score": row["score"], "maxMarks": row["max_marks"], "submittedAt": row["submitted_at"]}
+                for row in conn.execute("SELECT * FROM mcq_attempts WHERE owner_user_id=? ORDER BY submitted_at DESC, rowid DESC",
+                                        (request.state.user["id"],))]
 
 
 @app.get("/api/mcq-attempts")

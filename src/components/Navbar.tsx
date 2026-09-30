@@ -5,6 +5,8 @@ import { Sun, Moon } from 'lucide-react';
 interface NavbarProps {
   workspace: 'student' | 'admin';
   onWorkspaceChange: (workspace: 'student' | 'admin') => void;
+  role: 'student' | 'admin';
+  onLogout: () => void;
   activeTab: ActiveNavTab;
   onTabChange: (tab: ActiveNavTab) => void;
   gradedCount: number;
@@ -16,6 +18,8 @@ interface NavbarProps {
 export const Navbar: React.FC<NavbarProps> = ({
   workspace,
   onWorkspaceChange,
+  role,
+  onLogout,
   activeTab,
   onTabChange,
   gradedCount,
@@ -110,7 +114,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       <div className="flex gap-1 text-xs font-bold rounded-xl border border-slate-400/30 p-1">
         <button onClick={() => onWorkspaceChange('student')} className={`px-3 py-1.5 rounded-lg ${workspace === 'student' ? 'bg-blue-600 text-white' : ''}`}>Student</button>
-        <button onClick={() => onWorkspaceChange('admin')} className={`px-3 py-1.5 rounded-lg ${workspace === 'admin' ? 'bg-blue-600 text-white' : ''}`}>Admin</button>
+        {role === 'admin' && <button onClick={() => onWorkspaceChange('admin')} className={`px-3 py-1.5 rounded-lg ${workspace === 'admin' ? 'bg-blue-600 text-white' : ''}`}>Admin</button>}
+        <button onClick={onLogout} className="px-3 py-1.5 rounded-lg">Sign out</button>
       </div>
       {/* Navigation Links */}
       <nav

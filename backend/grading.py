@@ -75,6 +75,34 @@ def transcribe(image):
     return _chat(system, user, image=image)
 
 
+def detect_mcq_choices(image, codes):
+    """Read marks only; never infer the academically correct choices."""
+    system = ("You read marks on a student MCQ answer sheet. Do not solve questions or guess. "
+              "For each printed question code, report exactly one visibly marked option A/B/C/D. "
+              "Use an empty string if blank, multiple marks, unclear, or missing. "
+              "Return only JSON: {\"answers\":{\"CODE\":\"A\"},\"uncertain\":[\"CODE\"]}.")
+    content = _chat(system, json.dumps({"questionCodes": codes, "allowedOptions": ["A", "B", "C", "D", ""]}),
+                    image=image, structured=True)
+    if content.startswith("```") and content.endswith("```"):
+        content = "\n".join(content.splitlines()[1:-1]).strip()
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ModelUnavailable("The vision model did not return readable MCQ choices.") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
+        raise ModelUnavailable("The vision model did not return an MCQ answer map.")
+    answers = {}
+    uncertain_items = raw.get("uncertain", [])
+    uncertain = set(str(code) for code in uncertain_items) if isinstance(uncertain_items, list) else set()
+    for code in codes:
+        choice = str(raw["answers"].get(code, "")).strip().upper()
+        if choice not in {"A", "B", "C", "D"}:
+            choice = ""
+            uncertain.add(code)
+        answers[code] = choice
+    return answers, sorted(uncertain)
+
+
 def _evidence_present(evidence, answer):
     normalize = lambda value: re.sub(r"\s+", " ", value).strip().casefold()
     return bool(evidence.strip()) and normalize(evidence) in normalize(answer)
